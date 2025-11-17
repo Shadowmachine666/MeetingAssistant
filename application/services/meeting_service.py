@@ -111,17 +111,20 @@ class MeetingService:
         
         # Проверить размер файла и разбить на части если нужно
         audio_splitter = AudioSplitter()
-        audio_files = audio_splitter.split_audio_file(recording.file_path)
+        meeting_id_str = str(meeting_id)[:8]
+        audio_files = audio_splitter.split_audio_file(recording.file_path, meeting_id_str)
         
         # Транскрибировать все части
-        self.logger.info(f"Начало транскрипции аудио: {recording.file_path} ({len(audio_files)} частей)")
+        total_parts = len(audio_files)
+        self.logger.info(f"Начало транскрипции аудио совещания ID={meeting_id_str}: {recording.file_path} ({total_parts} частей)")
         transcriptions = []
         
         for i, audio_file in enumerate(audio_files):
-            self.logger.info(f"Транскрипция части {i + 1}/{len(audio_files)}: {Path(audio_file).name}")
+            part_num = i + 1
+            self.logger.info(f"[Совещание ID={meeting_id_str}] Транскрипция части {part_num}/{total_parts}: {Path(audio_file).name}")
             part_transcription = await self.openai_client.transcribe_audio(audio_file)
             transcriptions.append(part_transcription)
-            self.logger.info(f"Часть {i + 1} транскрибирована, длина: {len(part_transcription)} символов")
+            self.logger.info(f"[Совещание ID={meeting_id_str}] Часть {part_num}/{total_parts} транскрибирована, длина: {len(part_transcription)} символов")
             
             # Удалить временный файл части (если это не оригинальный файл)
             if audio_file != recording.file_path:
@@ -132,17 +135,30 @@ class MeetingService:
                 except Exception as e:
                     self.logger.warning(f"Не удалось удалить временный файл: {e}")
         
-        # Объединить все транскрипции
-        transcription = "\n\n".join(transcriptions)
-        self.logger.info(f"Транскрипция завершена, общая длина: {len(transcription)} символов")
+        # Объединить все транскрипции в хронологическом порядке
+        if total_parts > 1:
+            # Если несколько частей, добавить разделители для ясности
+            transcription_parts = []
+            for i, trans in enumerate(transcriptions):
+                if i == 0:
+                    transcription_parts.append(f"--- Часть {i+1} ---\n\n{trans}")
+                else:
+                    transcription_parts.append(f"\n\n--- Часть {i+1} ---\n\n{trans}")
+            transcription = "".join(transcription_parts)
+            self.logger.info(f"[Совещание ID={meeting_id_str}] Все {total_parts} частей транскрибированы и объединены в хронологическом порядке, общая длина: {len(transcription)} символов")
+        else:
+            transcription = transcriptions[0] if transcriptions else ""
+            self.logger.info(f"[Совещание ID={meeting_id_str}] Транскрипция завершена, длина: {len(transcription)} символов")
         
         # Сгенерировать отчет
         template_len = len(template_content) if template_content else 0
-        self.logger.info(f"Генерация отчета, размер шаблона: {template_len} символов")
+        is_multipart = total_parts > 1
+        self.logger.info(f"Генерация отчета на языке {target_language}, размер шаблона: {template_len} символов, частей: {total_parts}")
         report_content = await self.openai_client.generate_report(
             transcription=transcription,
             template=template_content,
-            language=target_language
+            language=target_language,
+            is_multipart=is_multipart
         )
         self.logger.info(f"Отчет сгенерирован, длина: {len(report_content)} символов")
         

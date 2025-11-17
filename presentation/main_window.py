@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.current_template = None
         self.source_language = Language.RUSSIAN  # Язык оригинала
         self.target_language = Language.RUSSIAN  # Язык перевода
+        self.report_language = Language.RUSSIAN  # Язык отчета
         self.workers = []  # Хранить ссылки на воркеры
         self.logger = get_logger()
         
@@ -189,6 +190,17 @@ class MainWindow(QMainWindow):
         meeting_device_layout.addWidget(self.combo_meeting_source)
         meeting_device_layout.addStretch()
         meeting_layout.addLayout(meeting_device_layout)
+        
+        # Выбор языка отчета
+        report_lang_layout = QHBoxLayout()
+        report_lang_layout.addWidget(QLabel("Язык отчета:"))
+        self.combo_report_language = QComboBox()
+        self.combo_report_language.addItems([lang.display_name for lang in Language])
+        self.combo_report_language.setCurrentIndex(0)  # Русский по умолчанию
+        self.combo_report_language.currentIndexChanged.connect(self.on_report_language_changed)
+        report_lang_layout.addWidget(self.combo_report_language)
+        report_lang_layout.addStretch()
+        meeting_layout.addLayout(report_lang_layout)
         
         # Статус совещания с таймером
         status_layout = QHBoxLayout()
@@ -357,6 +369,11 @@ class MainWindow(QMainWindow):
             self.meeting_device_index = self.selected_microphone_device
         source_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
         self.logger.info(f"Источник записи совещания изменен на: {source_name}")
+    
+    def on_report_language_changed(self, index: int):
+        """Обработчик изменения языка отчета"""
+        self.report_language = list(Language)[index]
+        self.logger.info(f"Язык отчета изменен на: {self.report_language.display_name}")
     
     def load_audio_devices(self):
         """Загрузить список аудио устройств"""
@@ -685,7 +702,7 @@ class MainWindow(QMainWindow):
         worker = AsyncWorker(
             self.meeting_service.process_meeting(
                 self.current_meeting.id,
-                self.target_language.code,
+                self.report_language.code,  # Использовать выбранный язык отчета
                 template_content
             )
         )
@@ -706,7 +723,7 @@ class MainWindow(QMainWindow):
             report_path = self.current_meeting.report_path
         
         # Определить язык отчета
-        lang_name = self.target_language.display_name
+        lang_name = self.report_language.display_name
         
         # Сформировать сообщение
         message = f"Отчет сгенерирован на языке: {lang_name}\n\n"

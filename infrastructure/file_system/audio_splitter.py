@@ -16,8 +16,13 @@ class AudioSplitter:
     def __init__(self):
         self.logger = get_logger()
     
-    def split_audio_file(self, audio_file_path: str) -> List[str]:
-        """Разбить аудио файл на части, если он слишком большой"""
+    def split_audio_file(self, audio_file_path: str, meeting_id: str = None) -> List[str]:
+        """Разбить аудио файл на части, если он слишком большой
+        
+        Args:
+            audio_file_path: Путь к исходному аудио файлу
+            meeting_id: ID совещания для включения в имена файлов частей
+        """
         file_size = os.path.getsize(audio_file_path)
         self.logger.info(f"Размер файла: {file_size / (1024*1024):.2f} MB")
         
@@ -26,6 +31,8 @@ class AudioSplitter:
             return [audio_file_path]
         
         self.logger.info(f"Файл слишком большой ({file_size / (1024*1024):.2f} MB), разбиваем на части...")
+        if meeting_id:
+            self.logger.info(f"ID совещания для идентификации частей: {meeting_id[:8]}")
         
         # Читаем исходный файл
         with wave.open(audio_file_path, 'rb') as wf:
@@ -45,6 +52,12 @@ class AudioSplitter:
         base_name = base_path.stem
         base_dir = base_path.parent
         
+        # Включить ID совещания в имя файла части, если указан
+        if meeting_id:
+            meeting_prefix = f"{meeting_id[:8]}_"
+        else:
+            meeting_prefix = ""
+        
         chunk_index = 0
         current_frame = 0
         
@@ -53,19 +66,21 @@ class AudioSplitter:
             # Читаем нужное количество фреймов
             chunk_frames = frames[current_frame * frame_size:end_frame * frame_size]
             
-            # Сохранить чанк
-            chunk_path = base_dir / f"{base_name}_part{chunk_index + 1:03d}.wav"
+            # Сохранить чанк с ID совещания в имени
+            chunk_path = base_dir / f"{meeting_prefix}{base_name}_part{chunk_index + 1:03d}.wav"
             with wave.open(str(chunk_path), 'wb') as chunk_wf:
                 chunk_wf.setparams(params)
                 chunk_wf.writeframes(chunk_frames)
             
             chunk_size = os.path.getsize(chunk_path)
-            self.logger.info(f"Создан чанк {chunk_index + 1}: {chunk_path.name}, размер: {chunk_size / (1024*1024):.2f} MB")
+            # Вычислить общее количество частей
+            total_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
+            self.logger.info(f"Создан чанк {chunk_index + 1}/{total_chunks}: {chunk_path.name}, размер: {chunk_size / (1024*1024):.2f} MB")
             chunk_paths.append(str(chunk_path))
             
             current_frame = end_frame
             chunk_index += 1
         
-        self.logger.info(f"Файл разбит на {len(chunk_paths)} частей")
+        self.logger.info(f"Файл разбит на {len(chunk_paths)} частей (совещание ID: {meeting_id[:8] if meeting_id else 'не указан'})")
         return chunk_paths
 

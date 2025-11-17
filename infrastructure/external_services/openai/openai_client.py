@@ -162,8 +162,15 @@ class OpenAIClient:
         
         return response["choices"][0]["message"]["content"].strip()
     
-    async def generate_report(self, transcription: str, template: str, language: str) -> str:
-        """Сгенерировать отчет на основе транскрипции и шаблона"""
+    async def generate_report(self, transcription: str, template: str, language: str, is_multipart: bool = False) -> str:
+        """Сгенерировать отчет на основе транскрипции и шаблона
+        
+        Args:
+            transcription: Транскрипция совещания
+            template: Шаблон отчета
+            language: Язык отчета (ru, pl, en)
+            is_multipart: True, если транскрипция состоит из нескольких частей
+        """
         language_names = {
             "ru": "русском",
             "pl": "польском",
@@ -172,7 +179,12 @@ class OpenAIClient:
         
         lang_name = language_names.get(language, language)
         
-        prompt = f"""На основе следующей транскрипции совещания и примера структуры отчета, создай полный отчет о совещании на {lang_name} языке.
+        # Добавить информацию о частях, если транскрипция разбита
+        multipart_note = ""
+        if is_multipart:
+            multipart_note = "\n\nВАЖНО: Эта транскрипция состоит из нескольких частей одного совещания, объединенных в хронологическом порядке. Все части относятся к одному и тому же совещанию. Создай единый отчет, объединяющий информацию из всех частей."
+        
+        prompt = f"""На основе следующей транскрипции совещания и примера структуры отчета, создай полный отчет о совещании на {lang_name} языке.{multipart_note}
 
 Пример структуры отчета:
 {template}
