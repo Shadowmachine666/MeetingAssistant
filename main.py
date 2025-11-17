@@ -39,7 +39,12 @@ def setup_dependencies():
     template_repository = TemplateRepository()
     
     # External services
-    openai_client = OpenAIClient()
+    # Создать пул ключей (singleton для всего приложения)
+    from infrastructure.external_services.openai.api_key_pool import ApiKeyPool
+    api_key_pool = ApiKeyPool()
+    
+    # Создать OpenAI клиент с пулом ключей
+    openai_client = OpenAIClient(api_key_pool=api_key_pool)
     audio_recorder = AudioRecorder(
         sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
         channels=int(os.getenv("AUDIO_CHANNELS", "2"))

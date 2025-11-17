@@ -1,7 +1,7 @@
 """OpenAI API клиент"""
 import asyncio
 import os
-from typing import List, Optional
+from typing import Optional
 
 import aiohttp
 from dotenv import load_dotenv
@@ -12,127 +12,167 @@ from core.exceptions.api_exception import (
     ApiRateLimitException,
     ApiRequestException
 )
+from infrastructure.external_services.openai.api_key_pool import ApiKeyPool
 
 load_dotenv()
 
 
 class OpenAIClient:
-    """Клиент для работы с OpenAI API"""
+    """Клиент для работы с OpenAI API с поддержкой пула ключей"""
     
-    def __init__(self):
+    def __init__(self, api_key_pool: Optional[ApiKeyPool] = None):
         self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.model = os.getenv("OPENAI_MODEL", "gpt-4")
         self.transcription_model = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1")
         self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "4000"))
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
         
-        # Поддержка нескольких ключей для ротации
-        self.api_keys: List[str] = []
-        for i in range(1, 4):  # Поддержка до 3 ключей
-            key = os.getenv(f"OPENAI_API_KEY_{i}")
-            if key:
-                self.api_keys.append(key)
-        
-        if not self.api_keys:
-            key = os.getenv("OPENAI_API_KEY")
-            if key:
-                self.api_keys.append(key)
-        
-        if not self.api_keys:
-            raise ApiKeyNotFoundException("OpenAI API ключ не найден в .env файле")
-        
-        self.current_key_index = 0
+        # Пул ключей для балансировки нагрузки
+        self.api_key_pool = api_key_pool or ApiKeyPool()
         self.retry_attempts = int(os.getenv("OPENAI_RETRY_ATTEMPTS", "3"))
         self.retry_delay_ms = int(os.getenv("OPENAI_RETRY_DELAY_MS", "1000"))
-    
-    def _get_current_key(self) -> str:
-        """Получить текущий API ключ"""
-        return self.api_keys[self.current_key_index]
-    
-    def _rotate_key(self) -> None:
-        """Переключиться на следующий ключ"""
-        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        
+        from core.logging.logger import get_logger
+        self.logger = get_logger()
+        self.logger.info(f"OpenAI клиент инициализирован с пулом из {self.api_key_pool.get_total_keys()} ключей")
     
     async def _make_request(self, method: str, endpoint: str, **kwargs) -> dict:
-        """Выполнить HTTP запрос с обработкой ошибок"""
+        """Выполнить HTTP запрос с обработкой ошибок и использованием пула ключей"""
         url = f"{self.base_url}/{endpoint}"
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {self._get_current_key()}"
+        
+        # Попробовать с разными ключами из пула
+        last_exception = None
+        used_keys = set()
         
         for attempt in range(self.retry_attempts):
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.request(method, url, headers=headers, **kwargs) as response:
-                        if response.status == 429:  # Rate limit
-                            if attempt < self.retry_attempts - 1:
-                                self._rotate_key()
-                                await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
-                                continue
-                            raise ApiRateLimitException("Превышен лимит запросов к OpenAI API")
-                        
-                        if response.status >= 400:
-                            error_data = await response.json()
-                            raise ApiRequestException(
-                                f"Ошибка API: {error_data.get('error', {}).get('message', 'Unknown error')}"
-                            )
-                        
-                        return await response.json()
+                # Получить доступный ключ из пула
+                async with self.api_key_pool.acquire_key() as api_key:
+                    # Проверить, не использовали ли мы этот ключ ранее в этой попытке
+                    if api_key in used_keys:
+                        # Если этот ключ уже использовался, освободим его и попробуем другой
+                        await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                        continue
+                    
+                    used_keys.add(api_key)
+                    self.logger.debug(f"Использование ключа для запроса {endpoint}, попытка {attempt + 1}")
+                    # Создать копию headers чтобы не изменять оригинальный kwargs
+                    headers = dict(kwargs.get("headers", {}))
+                    headers["Authorization"] = f"Bearer {api_key}"
+                    # Обновить kwargs с новыми headers
+                    kwargs_with_headers = {**kwargs, "headers": headers}
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.request(method, url, **kwargs_with_headers) as response:
+                            if response.status == 429:  # Rate limit
+                                self.logger.warning(f"Rate limit на ключе, попытка {attempt + 1}/{self.retry_attempts}")
+                                await self.api_key_pool.mark_key_failed(api_key, block_temporarily=True)
+                                if attempt < self.retry_attempts - 1:
+                                    await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                                    continue
+                                raise ApiRateLimitException("Превышен лимит запросов к OpenAI API")
+                            
+                            if response.status >= 400:
+                                error_data = await response.json()
+                                error_msg = error_data.get('error', {}).get('message', 'Unknown error')
+                                self.logger.error(f"Ошибка API (статус {response.status}): {error_msg}")
+                                await self.api_key_pool.mark_key_failed(api_key)
+                                raise ApiRequestException(f"Ошибка API: {error_msg}")
+                            
+                            # Успешный запрос - разблокировать ключ если был заблокирован
+                            await self.api_key_pool.unblock_key(api_key)
+                            return await response.json()
             
-            except aiohttp.ClientError as e:
+            except (ApiRateLimitException, ApiRequestException) as e:
+                last_exception = e
                 if attempt < self.retry_attempts - 1:
                     await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
                     continue
-                raise ApiRequestException(f"Ошибка соединения: {str(e)}")
+                raise
+            
+            except aiohttp.ClientError as e:
+                last_exception = ApiRequestException(f"Ошибка соединения: {str(e)}")
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                    continue
+                raise last_exception
         
-        raise ApiException("Не удалось выполнить запрос после всех попыток")
+        raise ApiException(f"Не удалось выполнить запрос после всех попыток: {last_exception}")
     
     async def transcribe_audio(self, audio_file_path: str, language: Optional[str] = None) -> str:
-        """Транскрибировать аудио файл"""
+        """Транскрибировать аудио файл с использованием пула ключей"""
         url = f"{self.base_url}/audio/transcriptions"
+        
+        # Подготовить данные один раз
+        data = aiohttp.FormData()
+        data.add_field('model', self.transcription_model)
+        if language:
+            data.add_field('language', language)
+        
+        # Читаем файл в память для повторных попыток
+        with open(audio_file_path, "rb") as audio_file:
+            audio_data = audio_file.read()
+        
+        data.add_field('file', 
+                      audio_data,
+                      filename=os.path.basename(audio_file_path),
+                      content_type='audio/wav')
+        
+        # Попробовать с разными ключами из пула
+        last_exception = None
+        used_keys = set()
         
         for attempt in range(self.retry_attempts):
             try:
-                headers = {"Authorization": f"Bearer {self._get_current_key()}"}
-                
-                data = aiohttp.FormData()
-                data.add_field('model', self.transcription_model)
-                if language:
-                    data.add_field('language', language)
-                
-                # Читаем файл в память для повторных попыток
-                with open(audio_file_path, "rb") as audio_file:
-                    audio_data = audio_file.read()
-                
-                data.add_field('file', 
-                              audio_data,
-                              filename=os.path.basename(audio_file_path),
-                              content_type='audio/wav')
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, headers=headers, data=data) as response:
-                        if response.status == 429:
-                            if attempt < self.retry_attempts - 1:
-                                self._rotate_key()
-                                await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
-                                continue
-                            raise ApiRateLimitException("Превышен лимит запросов к OpenAI API")
-                        
-                        if response.status >= 400:
-                            error_data = await response.json()
-                            raise ApiRequestException(
-                                f"Ошибка API: {error_data.get('error', {}).get('message', 'Unknown error')}"
-                            )
-                        
-                        result = await response.json()
-                        return result.get("text", "")
+                # Получить доступный ключ из пула
+                async with self.api_key_pool.acquire_key() as api_key:
+                    # Проверить, не использовали ли мы этот ключ ранее в этой попытке
+                    if api_key in used_keys:
+                        # Если этот ключ уже использовался, освободим его и попробуем другой
+                        await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                        continue
+                    
+                    used_keys.add(api_key)
+                    self.logger.debug(f"Использование ключа для транскрипции, попытка {attempt + 1}")
+                    headers = {"Authorization": f"Bearer {api_key}"}
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=headers, data=data) as response:
+                            if response.status == 429:
+                                self.logger.warning(f"Rate limit при транскрипции, попытка {attempt + 1}/{self.retry_attempts}")
+                                await self.api_key_pool.mark_key_failed(api_key, block_temporarily=True)
+                                if attempt < self.retry_attempts - 1:
+                                    await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                                    continue
+                                raise ApiRateLimitException("Превышен лимит запросов к OpenAI API")
+                            
+                            if response.status >= 400:
+                                error_data = await response.json()
+                                error_msg = error_data.get('error', {}).get('message', 'Unknown error')
+                                self.logger.error(f"Ошибка транскрипции (статус {response.status}): {error_msg}")
+                                await self.api_key_pool.mark_key_failed(api_key)
+                                raise ApiRequestException(f"Ошибка API: {error_msg}")
+                            
+                            # Успешный запрос
+                            await self.api_key_pool.unblock_key(api_key)
+                            result = await response.json()
+                            return result.get("text", "")
             
-            except aiohttp.ClientError as e:
+            except (ApiRateLimitException, ApiRequestException) as e:
+                last_exception = e
                 if attempt < self.retry_attempts - 1:
                     await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
                     continue
-                raise ApiRequestException(f"Ошибка соединения: {str(e)}")
+                raise
+            
+            except aiohttp.ClientError as e:
+                last_exception = ApiRequestException(f"Ошибка соединения: {str(e)}")
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(self.retry_delay_ms / 1000 * (attempt + 1))
+                    continue
+                raise last_exception
         
-        raise ApiException("Не удалось выполнить запрос после всех попыток")
+        raise ApiException(f"Не удалось выполнить транскрипцию после всех попыток: {last_exception}")
     
     async def translate_text(self, text: str, target_language: str, source_language: Optional[str] = None) -> str:
         """Перевести текст"""
