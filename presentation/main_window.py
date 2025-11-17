@@ -11,6 +11,8 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+import sounddevice as sd
+import numpy as np
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -86,6 +88,15 @@ class MainWindow(QMainWindow):
         self.is_recording_translation = False
         self.current_translation_source = None
         self.translation_recorder = None  # Будет создан при необходимости
+        
+        # Выбранные устройства
+        self.selected_microphone_device = None  # Индекс устройства
+        self.selected_stereo_mix_device = None  # Индекс устройства
+        
+        # Таймер для мониторинга уровня звука
+        self.audio_level_timer = QTimer()
+        self.audio_level_timer.timeout.connect(self.check_audio_level)
+        self.last_audio_level = 0.0
         
         self.logger.info("Инициализация главного окна...")
         self.init_ui()
@@ -171,6 +182,22 @@ class MainWindow(QMainWindow):
         self.combo_target_language.currentIndexChanged.connect(self.on_target_language_changed)
         lang_layout.addWidget(self.combo_target_language)
         translation_layout.addLayout(lang_layout)
+        
+        # Выбор устройств
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(QLabel("Микрофон:"))
+        self.combo_microphone = QComboBox()
+        self.combo_microphone.currentIndexChanged.connect(self.on_microphone_changed)
+        device_layout.addWidget(self.combo_microphone)
+        
+        device_layout.addWidget(QLabel("Stereo Mix:"))
+        self.combo_stereo_mix = QComboBox()
+        self.combo_stereo_mix.currentIndexChanged.connect(self.on_stereo_mix_changed)
+        device_layout.addWidget(self.combo_stereo_mix)
+        translation_layout.addLayout(device_layout)
+        
+        # Загрузить список устройств
+        self.load_audio_devices()
         
         # Кнопки переводов (toggle buttons)
         translate_btn_layout = QHBoxLayout()
@@ -264,6 +291,122 @@ class MainWindow(QMainWindow):
         """Обработчик изменения языка перевода"""
         self.target_language = list(Language)[index]
         self.logger.info(f"Язык перевода изменен на: {self.target_language.display_name}")
+    
+    def load_audio_devices(self):
+        """Загрузить список аудио устройств"""
+        try:
+            devices = sd.query_devices()
+            
+            # Загрузить микрофоны (исключая Stereo Mix)
+            microphone_devices = []
+            stereo_mix_devices = []
+            
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    name_lower = dev['name'].lower()
+                    if ('stereo mix' in name_lower or 
+                        'what u hear' in name_lower or 
+                        'miks stereo' in name_lower or
+                        'wave out mix' in name_lower):
+                        stereo_mix_devices.append((i, dev['name']))
+                    else:
+                        microphone_devices.append((i, dev['name']))
+            
+            # Заполнить комбобоксы
+            self.combo_microphone.clear()
+            for idx, name in microphone_devices:
+                self.combo_microphone.addItem(name, idx)
+                if self.selected_microphone_device is None:
+                    self.selected_microphone_device = idx
+            
+            self.combo_stereo_mix.clear()
+            for idx, name in stereo_mix_devices:
+                self.combo_stereo_mix.addItem(name, idx)
+                if self.selected_stereo_mix_device is None:
+                    self.selected_stereo_mix_device = idx
+            
+            # Установить выбранные устройства
+            if self.selected_microphone_device is not None:
+                for i in range(self.combo_microphone.count()):
+                    if self.combo_microphone.itemData(i) == self.selected_microphone_device:
+                        self.combo_microphone.setCurrentIndex(i)
+                        break
+            
+            if self.selected_stereo_mix_device is not None:
+                for i in range(self.combo_stereo_mix.count()):
+                    if self.combo_stereo_mix.itemData(i) == self.selected_stereo_mix_device:
+                        self.combo_stereo_mix.setCurrentIndex(i)
+                        break
+            
+            self.logger.info(f"Загружено микрофонов: {len(microphone_devices)}, Stereo Mix: {len(stereo_mix_devices)}")
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка загрузки устройств: {e}")
+    
+    def on_microphone_changed(self, index: int):
+        """Обработчик изменения микрофона"""
+        if index >= 0:
+            device_idx = self.combo_microphone.itemData(index)
+            if device_idx is not None:
+                self.selected_microphone_device = device_idx
+                device_info = sd.query_devices(device_idx)
+                self.logger.info(f"Выбран микрофон: {device_info['name']} (индекс: {device_idx})")
+    
+    def on_stereo_mix_changed(self, index: int):
+        """Обработчик изменения Stereo Mix"""
+        if index >= 0:
+            device_idx = self.combo_stereo_mix.itemData(index)
+            if device_idx is not None:
+                self.selected_stereo_mix_device = device_idx
+                device_info = sd.query_devices(device_idx)
+                self.logger.info(f"Выбран Stereo Mix: {device_info['name']} (индекс: {device_idx})")
+    
+    def check_audio_level(self):
+        """Проверить уровень звука во время записи"""
+        if not self.is_recording_translation or not self.translation_recorder:
+            return
+        
+        try:
+            # Использовать метод get_audio_level если доступен, иначе вычислять вручную
+            if hasattr(self.translation_recorder, 'get_audio_level'):
+                level = self.translation_recorder.get_audio_level()
+            else:
+                # Fallback - вычисление вручную
+                if not hasattr(self.translation_recorder, 'recording_data') or not self.translation_recorder.recording_data:
+                    source_name = "Stereo Mix" if self.current_translation_source == AudioSourceType.STEREO_MIX else "Микрофон"
+                    self.logger.debug(f"Ожидание данных с {source_name}...")
+                    return
+                
+                if len(self.translation_recorder.recording_data) > 0:
+                    last_chunk = self.translation_recorder.recording_data[-1]
+                    if last_chunk is not None and len(last_chunk) > 0:
+                        rms = np.sqrt(np.mean(last_chunk.astype(np.float32) ** 2))
+                        level = min(100, (rms / 32767.0) * 100)
+                    else:
+                        return
+                else:
+                    return
+            
+            source_name = "Stereo Mix" if self.current_translation_source == AudioSourceType.STEREO_MIX else "Микрофон"
+            
+            # Логировать всегда, но с разными уровнями
+            if level < 1.0:
+                # Очень тихо или нет звука
+                if abs(level - self.last_audio_level) > 0.5:
+                    self.last_audio_level = level
+                    self.logger.warning(f"⚠ Уровень звука ({source_name}): {level:.2f}% - звук не обнаружен!")
+            elif level < 5.0:
+                # Тихий звук
+                if abs(level - self.last_audio_level) > 1.0:
+                    self.last_audio_level = level
+                    self.logger.info(f"🔉 Уровень звука ({source_name}): {level:.1f}% - тихий звук")
+            else:
+                # Нормальный звук
+                if abs(level - self.last_audio_level) > 5.0:
+                    self.last_audio_level = level
+                    self.logger.info(f"🔊 Уровень звука ({source_name}): {level:.1f}% - звук обнаружен")
+        except Exception as e:
+            self.logger.debug(f"Ошибка проверки уровня звука: {e}")
     
     def on_opacity_changed(self, value: int):
         """Обработчик изменения прозрачности"""
@@ -412,14 +555,26 @@ class MainWindow(QMainWindow):
                 channels=int(os.getenv("AUDIO_CHANNELS", "2"))
             )
             
+            # Определить устройство
+            device_idx = None
+            if source_type == AudioSourceType.STEREO_MIX:
+                device_idx = self.selected_stereo_mix_device
+            else:
+                device_idx = self.selected_microphone_device
+            
             # Начать запись во временный файл
             from infrastructure.storage.storage_service import StorageService
             storage = StorageService()
             temp_path = storage.get_temp_audio_path(f"translation_{source_type.value}")
             
             try:
-                self.translation_recorder.start_recording(temp_path, source_type)
+                self.translation_recorder.start_recording(temp_path, source_type, device_idx)
                 self.label_translation_status.setText(f"Статус: Запись с {source_name}...")
+                
+                # Запустить мониторинг уровня звука
+                self.last_audio_level = 0.0
+                self.audio_level_timer.start(1000)  # Проверять каждую секунду
+                self.logger.info(f"Мониторинг уровня звука запущен для {source_name}")
                 
                 # Обновить текст кнопки
                 if source_type == AudioSourceType.STEREO_MIX:
@@ -454,6 +609,15 @@ class MainWindow(QMainWindow):
             self.logger.info(f"Остановка записи для перевода с {source_name}")
             self.label_translation_status.setText("Статус: Обработка...")
             
+            # Вычислить средний уровень звука перед остановкой
+            try:
+                avg_level = self.translation_recorder.get_audio_level()
+                self.logger.info(f"Средний уровень звука за запись: {avg_level:.1f}%")
+                if avg_level < 1.0:
+                    self.logger.warning(f"⚠ ВНИМАНИЕ: Очень низкий уровень звука ({avg_level:.2f}%) - возможно устройство не работает или звук слишком тихий!")
+            except Exception as e:
+                self.logger.debug(f"Не удалось вычислить средний уровень: {e}")
+            
             # Остановить запись
             file_path = self.translation_recorder.stop_recording()
             self.logger.info(f"Запись остановлена, файл: {file_path}")
@@ -478,10 +642,14 @@ class MainWindow(QMainWindow):
             self.logger.error(f"Ошибка остановки записи: {str(e)}")
             self.on_error(f"Ошибка остановки записи: {str(e)}")
         finally:
+            # Остановить мониторинг уровня звука
+            self.audio_level_timer.stop()
+            
             # Сбросить состояние
             self.is_recording_translation = False
             self.current_translation_source = None
             self.translation_recorder = None
+            self.last_audio_level = 0.0
             
             # Обновить UI
             self.btn_listen_interlocutor.setText("Выслушать собеседника")
@@ -505,18 +673,25 @@ class MainWindow(QMainWindow):
         original_text_escaped = escape(result.original_text)
         translated_text_escaped = escape(result.translated_text)
         
-        # Форматированный текст оригинала (жирный)
-        original_html = f'<p style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</p>'
+        # Форматированный текст оригинала (жирный, с новой строки)
+        # Используем <br> для новой строки и добавляем в начало
+        original_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</div><br>'
         # Вставить в начало
         cursor = self.text_original.textCursor()
         cursor.movePosition(cursor.MoveOperation.Start)
+        # Если уже есть текст, добавить разрыв перед новым
+        if self.text_original.toPlainText().strip():
+            cursor.insertHtml("<br>")
         cursor.insertHtml(original_html)
         
-        # Форматированный текст перевода (жирный)
-        translated_html = f'<p style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</p>'
+        # Форматированный текст перевода (жирный, с новой строки)
+        translated_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</div><br>'
         # Вставить в начало
         cursor = self.text_translated.textCursor()
         cursor.movePosition(cursor.MoveOperation.Start)
+        # Если уже есть текст, добавить разрыв перед новым
+        if self.text_translated.toPlainText().strip():
+            cursor.insertHtml("<br>")
         cursor.insertHtml(translated_html)
     
     def on_error(self, error_message: str):

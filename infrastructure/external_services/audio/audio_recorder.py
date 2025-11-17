@@ -25,7 +25,7 @@ class AudioRecorder:
         self.output_path: Optional[str] = None
         self.logger = get_logger()
     
-    def start_recording(self, output_path: str, source_type: AudioSourceType = AudioSourceType.MICROPHONE) -> None:
+    def start_recording(self, output_path: str, source_type: AudioSourceType = AudioSourceType.MICROPHONE, device_index: Optional[int] = None) -> None:
         """Начать запись"""
         if self.is_recording:
             raise AudioCaptureException("Запись уже идет")
@@ -38,41 +38,44 @@ class AudioRecorder:
         self.is_recording = True
         
         # Определить устройство ввода
-        device = None
-        if source_type == AudioSourceType.STEREO_MIX:
-            # Попытка найти Stereo Mix / Miks stereo
-            devices = sd.query_devices()
-            for i, dev in enumerate(devices):
-                name_lower = dev["name"].lower()
-                if ("stereo mix" in name_lower or 
-                    "what u hear" in name_lower or 
-                    "miks stereo" in name_lower):
-                    device = i
-                    break
-        else:
-            # Для микрофона - найти реальный микрофон (не Stereo Mix)
-            devices = sd.query_devices()
-            for i, dev in enumerate(devices):
-                if dev['max_input_channels'] > 0:
+        device = device_index  # Использовать переданное устройство
+        
+        if device is None:
+            # Если устройство не указано, найти автоматически
+            if source_type == AudioSourceType.STEREO_MIX:
+                # Попытка найти Stereo Mix / Miks stereo
+                devices = sd.query_devices()
+                for i, dev in enumerate(devices):
                     name_lower = dev["name"].lower()
-                    # Исключаем Stereo Mix
-                    if not ("stereo mix" in name_lower or 
-                            "what u hear" in name_lower or 
-                            "miks stereo" in name_lower or
-                            "wave out mix" in name_lower):
+                    if ("stereo mix" in name_lower or 
+                        "what u hear" in name_lower or 
+                        "miks stereo" in name_lower):
                         device = i
                         break
-            # Если не нашли, используем устройство по умолчанию
-            if device is None:
-                try:
-                    default_input = sd.query_devices(kind='input')
-                    devices = sd.query_devices()
-                    for i, dev in enumerate(devices):
-                        if dev['name'] == default_input['name']:
+            else:
+                # Для микрофона - найти реальный микрофон (не Stereo Mix)
+                devices = sd.query_devices()
+                for i, dev in enumerate(devices):
+                    if dev['max_input_channels'] > 0:
+                        name_lower = dev["name"].lower()
+                        # Исключаем Stereo Mix
+                        if not ("stereo mix" in name_lower or 
+                                "what u hear" in name_lower or 
+                                "miks stereo" in name_lower or
+                                "wave out mix" in name_lower):
                             device = i
                             break
-                except Exception:
-                    pass
+                # Если не нашли, используем устройство по умолчанию
+                if device is None:
+                    try:
+                        default_input = sd.query_devices(kind='input')
+                        devices = sd.query_devices()
+                        for i, dev in enumerate(devices):
+                            if dev['name'] == default_input['name']:
+                                device = i
+                                break
+                    except Exception:
+                        pass
         
         # Логирование выбранного устройства
         if device is not None:
@@ -100,6 +103,25 @@ class AudioRecorder:
         except Exception as e:
             self.is_recording = False
             raise AudioCaptureException(f"Ошибка начала записи: {str(e)}")
+    
+    def get_audio_level(self) -> float:
+        """Получить текущий уровень звука (0-100)"""
+        if not self.recording_data or len(self.recording_data) == 0:
+            return 0.0
+        
+        try:
+            # Объединить все фрагменты для вычисления среднего уровня
+            all_data = np.concatenate(self.recording_data, axis=0)
+            if len(all_data) == 0:
+                return 0.0
+            
+            # Вычислить RMS
+            rms = np.sqrt(np.mean(all_data.astype(np.float32) ** 2))
+            # Нормализовать к диапазону 0-100
+            level = min(100, (rms / 32767.0) * 100)
+            return level
+        except Exception:
+            return 0.0
     
     def stop_recording(self) -> str:
         """Остановить запись и сохранить файл"""
