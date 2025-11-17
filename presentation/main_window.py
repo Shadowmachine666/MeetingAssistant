@@ -77,9 +77,15 @@ class MainWindow(QMainWindow):
         
         self.current_meeting = None
         self.current_template = None
-        self.target_language = Language.RUSSIAN
+        self.source_language = Language.RUSSIAN  # Язык оригинала
+        self.target_language = Language.RUSSIAN  # Язык перевода
         self.workers = []  # Хранить ссылки на воркеры
         self.logger = get_logger()
+        
+        # Состояния записи для переводов
+        self.is_recording_translation = False
+        self.current_translation_source = None
+        self.translation_recorder = None  # Будет создан при необходимости
         
         self.logger.info("Инициализация главного окна...")
         self.init_ui()
@@ -88,6 +94,15 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Обработчик закрытия окна - завершить все потоки"""
+        # Остановить запись перевода, если идет
+        if self.is_recording_translation:
+            self.logger.info("Остановка записи перевода при закрытии окна")
+            try:
+                self._stop_translation_recording()
+            except Exception as e:
+                self.logger.error(f"Ошибка при остановке записи: {e}")
+        
+        # Завершить все потоки
         for worker in self.workers[:]:  # Копия списка, так как он может изменяться
             if worker.isRunning():
                 worker.quit()
@@ -140,25 +155,39 @@ class MainWindow(QMainWindow):
         translation_group = QGroupBox("Переводы в реальном времени")
         translation_layout = QVBoxLayout()
         
-        # Выбор языка
+        # Выбор языков
         lang_layout = QHBoxLayout()
-        lang_layout.addWidget(QLabel("Язык перевода:"))
-        self.combo_language = QComboBox()
-        self.combo_language.addItems([lang.display_name for lang in Language])
-        self.combo_language.currentIndexChanged.connect(self.on_language_changed)
-        lang_layout.addWidget(self.combo_language)
+        lang_layout.addWidget(QLabel("Язык оригинала:"))
+        self.combo_source_language = QComboBox()
+        self.combo_source_language.addItems([lang.display_name for lang in Language])
+        self.combo_source_language.setCurrentIndex(0)  # Русский по умолчанию
+        self.combo_source_language.currentIndexChanged.connect(self.on_source_language_changed)
+        lang_layout.addWidget(self.combo_source_language)
+        
+        lang_layout.addWidget(QLabel("→ Язык перевода:"))
+        self.combo_target_language = QComboBox()
+        self.combo_target_language.addItems([lang.display_name for lang in Language])
+        self.combo_target_language.setCurrentIndex(2)  # English по умолчанию
+        self.combo_target_language.currentIndexChanged.connect(self.on_target_language_changed)
+        lang_layout.addWidget(self.combo_target_language)
         translation_layout.addLayout(lang_layout)
         
-        # Кнопки переводов
+        # Кнопки переводов (toggle buttons)
         translate_btn_layout = QHBoxLayout()
         self.btn_listen_interlocutor = QPushButton("Выслушать собеседника")
-        self.btn_listen_interlocutor.clicked.connect(lambda: self.translate_audio(AudioSourceType.STEREO_MIX))
+        self.btn_listen_interlocutor.setCheckable(True)  # Toggle button
+        self.btn_listen_interlocutor.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.STEREO_MIX, checked))
         self.btn_listen_us = QPushButton("Выслушать нас")
-        self.btn_listen_us.clicked.connect(lambda: self.translate_audio(AudioSourceType.MICROPHONE))
+        self.btn_listen_us.setCheckable(True)  # Toggle button
+        self.btn_listen_us.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.MICROPHONE, checked))
         
         translate_btn_layout.addWidget(self.btn_listen_interlocutor)
         translate_btn_layout.addWidget(self.btn_listen_us)
         translation_layout.addLayout(translate_btn_layout)
+        
+        # Статус записи перевода
+        self.label_translation_status = QLabel("Статус: Не записывается")
+        translation_layout.addWidget(self.label_translation_status)
         
         translation_group.setLayout(translation_layout)
         layout.addWidget(translation_group)
@@ -171,6 +200,8 @@ class MainWindow(QMainWindow):
         original_layout = QVBoxLayout()
         self.text_original = QTextEdit()
         self.text_original.setReadOnly(True)
+        # Настроить форматирование для жирного текста
+        self.text_original.setAcceptRichText(True)
         original_layout.addWidget(self.text_original)
         original_group.setLayout(original_layout)
         text_layout.addWidget(original_group)
@@ -180,6 +211,8 @@ class MainWindow(QMainWindow):
         translated_layout = QVBoxLayout()
         self.text_translated = QTextEdit()
         self.text_translated.setReadOnly(True)
+        # Настроить форматирование для жирного текста
+        self.text_translated.setAcceptRichText(True)
         translated_layout.addWidget(self.text_translated)
         translated_group.setLayout(translated_layout)
         text_layout.addWidget(translated_group)
@@ -222,9 +255,15 @@ class MainWindow(QMainWindow):
         flags = self.windowFlags()
         # Можно добавить флаги для прозрачности и т.д.
     
-    def on_language_changed(self, index: int):
-        """Обработчик изменения языка"""
+    def on_source_language_changed(self, index: int):
+        """Обработчик изменения языка оригинала"""
+        self.source_language = list(Language)[index]
+        self.logger.info(f"Язык оригинала изменен на: {self.source_language.display_name}")
+    
+    def on_target_language_changed(self, index: int):
+        """Обработчик изменения языка перевода"""
         self.target_language = list(Language)[index]
+        self.logger.info(f"Язык перевода изменен на: {self.target_language.display_name}")
     
     def on_opacity_changed(self, value: int):
         """Обработчик изменения прозрачности"""
@@ -350,29 +389,135 @@ class MainWindow(QMainWindow):
         self.current_template = template
         QMessageBox.information(self, "Шаблон загружен", f"Шаблон загружен из:\n{template.file_path}")
     
-    def translate_audio(self, source_type: AudioSourceType):
-        """Перевести аудио"""
+    def toggle_translation_recording(self, source_type: AudioSourceType, checked: bool):
+        """Переключить запись для перевода"""
         source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
-        self.logger.info(f"Запрос на перевод с {source_name}, целевой язык: {self.target_language.display_name}")
-        worker = AsyncWorker(
-            self.translation_service.translate_from_audio(
-                source_type=source_type,
-                target_language=self.target_language,
-                duration_seconds=5.0
+        
+        if checked:
+            # Начать запись
+            if self.is_recording_translation:
+                # Если уже идет запись с другого источника, остановить её
+                self.logger.warning("Остановка предыдущей записи перевода")
+                self._stop_translation_recording()
+            
+            self.logger.info(f"Начало записи для перевода с {source_name}")
+            self.is_recording_translation = True
+            self.current_translation_source = source_type
+            
+            # Создать отдельный рекордер для перевода
+            from infrastructure.external_services.audio.audio_recorder import AudioRecorder
+            import os
+            self.translation_recorder = AudioRecorder(
+                sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
+                channels=int(os.getenv("AUDIO_CHANNELS", "2"))
             )
-        )
-        worker.finished.connect(self.on_translation_completed)
-        worker.finished.connect(lambda: self._remove_worker(worker))
-        worker.error.connect(self.on_error)
-        worker.error.connect(lambda: self._remove_worker(worker))
-        self.workers.append(worker)
-        worker.start()
+            
+            # Начать запись во временный файл
+            from infrastructure.storage.storage_service import StorageService
+            storage = StorageService()
+            temp_path = storage.get_temp_audio_path(f"translation_{source_type.value}")
+            
+            try:
+                self.translation_recorder.start_recording(temp_path, source_type)
+                self.label_translation_status.setText(f"Статус: Запись с {source_name}...")
+                
+                # Обновить текст кнопки
+                if source_type == AudioSourceType.STEREO_MIX:
+                    self.btn_listen_interlocutor.setText("⏹ Остановить запись")
+                    self.btn_listen_us.setEnabled(False)
+                else:
+                    self.btn_listen_us.setText("⏹ Остановить запись")
+                    self.btn_listen_interlocutor.setEnabled(False)
+            except Exception as e:
+                self.logger.error(f"Ошибка начала записи: {str(e)}")
+                self.on_error(f"Ошибка начала записи: {str(e)}")
+                self.is_recording_translation = False
+                self.current_translation_source = None
+                if source_type == AudioSourceType.STEREO_MIX:
+                    self.btn_listen_interlocutor.setChecked(False)
+                else:
+                    self.btn_listen_us.setChecked(False)
+        else:
+            # Остановить запись и обработать
+            if self.is_recording_translation and self.current_translation_source == source_type:
+                self._stop_translation_recording()
+    
+    def _stop_translation_recording(self):
+        """Остановить запись перевода и обработать"""
+        if not self.is_recording_translation or not self.translation_recorder:
+            return
+        
+        source_type = self.current_translation_source
+        source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+        
+        try:
+            self.logger.info(f"Остановка записи для перевода с {source_name}")
+            self.label_translation_status.setText("Статус: Обработка...")
+            
+            # Остановить запись
+            file_path = self.translation_recorder.stop_recording()
+            self.logger.info(f"Запись остановлена, файл: {file_path}")
+            
+            # Обработать запись
+            worker = AsyncWorker(
+                self.translation_service.translate_from_audio_file(
+                    file_path=file_path,
+                    source_type=source_type,
+                    target_language=self.target_language,
+                    source_language=self.source_language
+                )
+            )
+            worker.finished.connect(self.on_translation_completed)
+            worker.finished.connect(lambda: self._remove_worker(worker))
+            worker.error.connect(self.on_error)
+            worker.error.connect(lambda: self._remove_worker(worker))
+            self.workers.append(worker)
+            worker.start()
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка остановки записи: {str(e)}")
+            self.on_error(f"Ошибка остановки записи: {str(e)}")
+        finally:
+            # Сбросить состояние
+            self.is_recording_translation = False
+            self.current_translation_source = None
+            self.translation_recorder = None
+            
+            # Обновить UI
+            self.btn_listen_interlocutor.setText("Выслушать собеседника")
+            self.btn_listen_us.setText("Выслушать нас")
+            self.btn_listen_interlocutor.setEnabled(True)
+            self.btn_listen_us.setEnabled(True)
+            self.btn_listen_interlocutor.setChecked(False)
+            self.btn_listen_us.setChecked(False)
+            self.label_translation_status.setText("Статус: Не записывается")
     
     def on_translation_completed(self, result):
         """Обработчик завершения перевода"""
         self.logger.info(f"Перевод завершен: {len(result.original_text)} -> {len(result.translated_text)} символов")
-        self.text_original.append(result.original_text)
-        self.text_translated.append(result.translated_text)
+        
+        # Добавить текст в начало (сверху) с жирным шрифтом
+        from datetime import datetime
+        from html import escape
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # Экранировать HTML символы
+        original_text_escaped = escape(result.original_text)
+        translated_text_escaped = escape(result.translated_text)
+        
+        # Форматированный текст оригинала (жирный)
+        original_html = f'<p style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</p>'
+        # Вставить в начало
+        cursor = self.text_original.textCursor()
+        cursor.movePosition(cursor.MoveOperation.Start)
+        cursor.insertHtml(original_html)
+        
+        # Форматированный текст перевода (жирный)
+        translated_html = f'<p style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</p>'
+        # Вставить в начало
+        cursor = self.text_translated.textCursor()
+        cursor.movePosition(cursor.MoveOperation.Start)
+        cursor.insertHtml(translated_html)
     
     def on_error(self, error_message: str):
         """Обработчик ошибок"""

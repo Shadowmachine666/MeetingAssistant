@@ -9,6 +9,7 @@ import numpy as np
 import sounddevice as sd
 
 from core.exceptions.translation_exception import AudioCaptureException
+from core.logging.logger import get_logger
 from domain.enums.audio_source_type import AudioSourceType
 
 
@@ -22,6 +23,7 @@ class AudioRecorder:
         self.recording_data: Optional[np.ndarray] = None
         self.recording_stream: Optional[sd.InputStream] = None
         self.output_path: Optional[str] = None
+        self.logger = get_logger()
     
     def start_recording(self, output_path: str, source_type: AudioSourceType = AudioSourceType.MICROPHONE) -> None:
         """Начать запись"""
@@ -38,16 +40,50 @@ class AudioRecorder:
         # Определить устройство ввода
         device = None
         if source_type == AudioSourceType.STEREO_MIX:
-            # Попытка найти Stereo Mix
+            # Попытка найти Stereo Mix / Miks stereo
             devices = sd.query_devices()
             for i, dev in enumerate(devices):
-                if "stereo mix" in dev["name"].lower() or "what u hear" in dev["name"].lower():
+                name_lower = dev["name"].lower()
+                if ("stereo mix" in name_lower or 
+                    "what u hear" in name_lower or 
+                    "miks stereo" in name_lower):
                     device = i
                     break
+        else:
+            # Для микрофона - найти реальный микрофон (не Stereo Mix)
+            devices = sd.query_devices()
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    name_lower = dev["name"].lower()
+                    # Исключаем Stereo Mix
+                    if not ("stereo mix" in name_lower or 
+                            "what u hear" in name_lower or 
+                            "miks stereo" in name_lower or
+                            "wave out mix" in name_lower):
+                        device = i
+                        break
+            # Если не нашли, используем устройство по умолчанию
+            if device is None:
+                try:
+                    default_input = sd.query_devices(kind='input')
+                    devices = sd.query_devices()
+                    for i, dev in enumerate(devices):
+                        if dev['name'] == default_input['name']:
+                            device = i
+                            break
+                except Exception:
+                    pass
+        
+        # Логирование выбранного устройства
+        if device is not None:
+            device_info = sd.query_devices(device)
+            self.logger.info(f"Выбрано устройство записи: {device_info['name']} (индекс: {device})")
+        else:
+            self.logger.warning("Устройство не выбрано, используется по умолчанию")
         
         def callback(indata, frames, time, status):
             if status:
-                print(f"Audio status: {status}")
+                self.logger.warning(f"Audio status: {status}")
             if self.is_recording:
                 self.recording_data.append(indata.copy())
         
@@ -60,6 +96,7 @@ class AudioRecorder:
                 dtype=np.int16
             )
             self.recording_stream.start()
+            self.logger.info("Запись начата успешно")
         except Exception as e:
             self.is_recording = False
             raise AudioCaptureException(f"Ошибка начала записи: {str(e)}")
@@ -103,12 +140,15 @@ class AudioRecorder:
         return file_path
     
     def record_short_audio(self, duration_seconds: float, source_type: AudioSourceType = AudioSourceType.MICROPHONE) -> np.ndarray:
-        """Записать короткий фрагмент аудио (для переводов)"""
+        """Записать короткий фрагмент аудио (для переводов) - устаревший метод"""
         device = None
         if source_type == AudioSourceType.STEREO_MIX:
             devices = sd.query_devices()
             for i, dev in enumerate(devices):
-                if "stereo mix" in dev["name"].lower() or "what u hear" in dev["name"].lower():
+                name_lower = dev["name"].lower()
+                if ("stereo mix" in name_lower or 
+                    "what u hear" in name_lower or 
+                    "miks stereo" in name_lower):
                     device = i
                     break
         
