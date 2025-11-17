@@ -17,7 +17,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog, QComboBox, QSlider,
-    QCheckBox, QMessageBox, QGroupBox
+    QCheckBox, QMessageBox, QGroupBox, QSizePolicy
 )
 
 from application.services.meeting_service import MeetingService
@@ -27,6 +27,82 @@ from core.logging.logger import get_logger
 from domain.enums.audio_source_type import AudioSourceType
 from domain.enums.language import Language
 from domain.enums.meeting_status import MeetingStatus
+
+
+class CollapsibleGroupBox(QWidget):
+    """Сворачиваемая группа с кнопкой-стрелкой"""
+    
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.is_collapsed = False
+        self.content_widget = None
+        self.content_layout = None
+        
+        # Главный layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Заголовок с кнопкой
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Кнопка-стрелка
+        self.toggle_button = QPushButton("▼")
+        self.toggle_button.setFixedSize(20, 20)
+        self.toggle_button.setFlat(True)
+        self.toggle_button.clicked.connect(self.toggle_collapse)
+        header_layout.addWidget(self.toggle_button)
+        
+        # Заголовок
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: bold;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # Стиль для заголовка
+        header_widget.setStyleSheet("""
+            QWidget {
+                border: 2px solid #cccccc;
+                border-radius: 5px;
+                background-color: #f0f0f0;
+            }
+        """)
+        
+        main_layout.addWidget(header_widget)
+        
+        # Виджет для содержимого
+        self.content_widget = QWidget()
+        self.content_widget.setStyleSheet("""
+            QWidget {
+                border: 2px solid #cccccc;
+                border-top: none;
+                border-radius: 0 0 5px 5px;
+            }
+        """)
+        main_layout.addWidget(self.content_widget)
+    
+    def setLayout(self, layout):
+        """Установить layout для содержимого"""
+        self.content_layout = layout
+        self.content_widget.setLayout(layout)
+    
+    def toggle_collapse(self):
+        """Переключить состояние сворачивания"""
+        self.is_collapsed = not self.is_collapsed
+        
+        if self.is_collapsed:
+            self.content_widget.setVisible(False)
+            self.toggle_button.setText("▶")
+        else:
+            self.content_widget.setVisible(True)
+            self.toggle_button.setText("▼")
+        
+        # Обновить размер
+        self.adjustSize()
+        if self.parent():
+            self.parent().adjustSize()
 
 
 class AsyncWorker(QThread):
@@ -144,7 +220,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # Группа управления совещанием
-        meeting_group = QGroupBox("Управление совещанием")
+        meeting_group = CollapsibleGroupBox("Управление совещанием")
         meeting_layout = QVBoxLayout()
         
         # Кнопки совещания
@@ -228,9 +304,10 @@ class MainWindow(QMainWindow):
         
         meeting_group.setLayout(meeting_layout)
         layout.addWidget(meeting_group)
+        layout.setStretchFactor(meeting_group, 0)  # Не растягивается
         
         # Группа переводов
-        translation_group = QGroupBox("Переводы в реальном времени")
+        translation_group = CollapsibleGroupBox("Переводы в реальном времени")
         translation_layout = QVBoxLayout()
         
         # Выбор языков
@@ -285,9 +362,12 @@ class MainWindow(QMainWindow):
         
         translation_group.setLayout(translation_layout)
         layout.addWidget(translation_group)
+        layout.setStretchFactor(translation_group, 0)  # Не растягивается
         
-        # Окна текста
-        text_layout = QHBoxLayout()
+        # Окна текста (в виджете-обертке для stretch)
+        text_widget = QWidget()
+        text_layout = QHBoxLayout(text_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
         
         # Оригинальный текст
         original_group = QGroupBox("Текст оригинала")
@@ -311,7 +391,8 @@ class MainWindow(QMainWindow):
         translated_group.setLayout(translated_layout)
         text_layout.addWidget(translated_group)
         
-        layout.addLayout(text_layout)
+        layout.addWidget(text_widget)
+        layout.setStretchFactor(text_widget, 1)  # Растягивается на все свободное пространство
         
         # Настройки окна
         settings_group = QGroupBox("Настройки окна")
@@ -917,35 +998,50 @@ class MainWindow(QMainWindow):
         """Обработчик завершения перевода"""
         self.logger.info(f"Перевод завершен: {len(result.original_text)} -> {len(result.translated_text)} символов")
         
-        # Добавить текст в начало (сверху) с жирным шрифтом
         from datetime import datetime
         from html import escape
+        import re
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         # Экранировать HTML символы
         original_text_escaped = escape(result.original_text)
         translated_text_escaped = escape(result.translated_text)
         
-        # Форматированный текст оригинала (жирный, с новой строки)
-        # Используем <br> для новой строки и добавляем в начало
-        original_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</div><br>'
-        # Вставить в начало
-        cursor = self.text_original.textCursor()
-        cursor.movePosition(cursor.MoveOperation.Start)
-        # Если уже есть текст, добавить разрыв перед новым
-        if self.text_original.toPlainText().strip():
-            cursor.insertHtml("<br>")
-        cursor.insertHtml(original_html)
+        # Обработать оригинальный текст
+        current_html = self.text_original.toHtml()
+        # Убрать жирный шрифт из всех существующих сообщений
+        # Заменить <b>...</b> на обычный текст
+        current_html = re.sub(r'<b>([^<]*)</b>', r'\1', current_html)
+        # Заменить style="font-weight: bold; ..." на style="..."
+        current_html = re.sub(r'style="font-weight:\s*bold[^"]*"', 'style="margin: 5px 0;"', current_html)
+        current_html = re.sub(r'style="[^"]*font-weight:\s*bold[^"]*"', lambda m: m.group(0).replace('font-weight: bold;', '').replace('font-weight:bold;', ''), current_html)
         
-        # Форматированный текст перевода (жирный, с новой строки)
-        translated_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</div><br>'
-        # Вставить в начало
-        cursor = self.text_translated.textCursor()
-        cursor.movePosition(cursor.MoveOperation.Start)
-        # Если уже есть текст, добавить разрыв перед новым
-        if self.text_translated.toPlainText().strip():
-            cursor.insertHtml("<br>")
-        cursor.insertHtml(translated_html)
+        # Добавить новое сообщение с жирным шрифтом в начало
+        new_original_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</div>'
+        if current_html.strip() and '<body' in current_html:
+            # Вставить перед существующим содержимым body
+            current_html = re.sub(r'(<body[^>]*>)', r'\1' + new_original_html + '<br>', current_html, count=1)
+        else:
+            # Если нет body, создать простую структуру
+            current_html = f'<html><body>{new_original_html}</body></html>'
+        
+        self.text_original.setHtml(current_html)
+        
+        # Обработать переведенный текст
+        current_html = self.text_translated.toHtml()
+        # Убрать жирный шрифт из всех существующих сообщений
+        current_html = re.sub(r'<b>([^<]*)</b>', r'\1', current_html)
+        current_html = re.sub(r'style="font-weight:\s*bold[^"]*"', 'style="margin: 5px 0;"', current_html)
+        current_html = re.sub(r'style="[^"]*font-weight:\s*bold[^"]*"', lambda m: m.group(0).replace('font-weight: bold;', '').replace('font-weight:bold;', ''), current_html)
+        
+        # Добавить новое сообщение с жирным шрифтом в начало
+        new_translated_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</div>'
+        if current_html.strip() and '<body' in current_html:
+            current_html = re.sub(r'(<body[^>]*>)', r'\1' + new_translated_html + '<br>', current_html, count=1)
+        else:
+            current_html = f'<html><body>{new_translated_html}</body></html>'
+        
+        self.text_translated.setHtml(current_html)
     
     def on_error(self, error_message: str):
         """Обработчик ошибок"""
