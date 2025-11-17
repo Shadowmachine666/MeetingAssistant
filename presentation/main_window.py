@@ -173,10 +173,9 @@ class MainWindow(QMainWindow):
         self.workers = []  # Хранить ссылки на воркеры
         self.logger = get_logger()
         
-        # Состояния записи для переводов
-        self.is_recording_translation = False
-        self.current_translation_source = None
-        self.translation_recorder = None  # Будет создан при необходимости
+        # Состояния записи для переводов (поддержка параллельной записи)
+        self.translation_recorders = {}  # Dict[AudioSourceType, AudioRecorder]
+        self.translation_audio_levels = {}  # Dict[AudioSourceType, float] - для мониторинга уровня звука
         
         # Выбранные устройства
         self.selected_microphone_device = None  # Индекс устройства
@@ -189,7 +188,6 @@ class MainWindow(QMainWindow):
         # Таймер для мониторинга уровня звука
         self.audio_level_timer = QTimer()
         self.audio_level_timer.timeout.connect(self.check_audio_level)
-        self.last_audio_level = 0.0
         
         # Папка для записей
         self.recordings_folder = "./Recordings"
@@ -201,13 +199,14 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Обработчик закрытия окна - завершить все потоки"""
-        # Остановить запись перевода, если идет
-        if self.is_recording_translation:
-            self.logger.info("Остановка записи перевода при закрытии окна")
-            try:
-                self._stop_translation_recording()
-            except Exception as e:
-                self.logger.error(f"Ошибка при остановке записи: {e}")
+        # Остановить все записи переводов, если идут
+        if self.translation_recorders:
+            self.logger.info("Остановка всех записей переводов при закрытии окна")
+            for source_type in list(self.translation_recorders.keys()):
+                try:
+                    self._stop_translation_recording(source_type)
+                except Exception as e:
+                    self.logger.error(f"Ошибка при остановке записи {source_type}: {e}")
         
         # Завершить все потоки
         for worker in self.workers[:]:  # Копия списка, так как он может изменяться
@@ -662,51 +661,51 @@ class MainWindow(QMainWindow):
                     self.meeting_device_index = device_idx
     
     def check_audio_level(self):
-        """Проверить уровень звука во время записи"""
-        if not self.is_recording_translation or not self.translation_recorder:
+        """Проверить уровень звука во время записи (для всех активных записей)"""
+        if not self.translation_recorders:
             return
         
-        try:
-            # Использовать метод get_audio_level если доступен, иначе вычислять вручную
-            if hasattr(self.translation_recorder, 'get_audio_level'):
-                level = self.translation_recorder.get_audio_level()
-            else:
-                # Fallback - вычисление вручную
-                if not hasattr(self.translation_recorder, 'recording_data') or not self.translation_recorder.recording_data:
-                    source_name = "Stereo Mix" if self.current_translation_source == AudioSourceType.STEREO_MIX else "Микрофон"
-                    self.logger.debug(f"Ожидание данных с {source_name}...")
-                    return
-                
-                if len(self.translation_recorder.recording_data) > 0:
-                    last_chunk = self.translation_recorder.recording_data[-1]
-                    if last_chunk is not None and len(last_chunk) > 0:
-                        rms = np.sqrt(np.mean(last_chunk.astype(np.float32) ** 2))
-                        level = min(100, (rms / 32767.0) * 100)
-                    else:
-                        return
+        for source_type, recorder in self.translation_recorders.items():
+            try:
+                # Использовать метод get_audio_level если доступен
+                if hasattr(recorder, 'get_audio_level'):
+                    level = recorder.get_audio_level()
                 else:
-                    return
-            
-            source_name = "Stereo Mix" if self.current_translation_source == AudioSourceType.STEREO_MIX else "Микрофон"
-            
-            # Логировать всегда, но с разными уровнями
-            if level < 1.0:
-                # Очень тихо или нет звука
-                if abs(level - self.last_audio_level) > 0.5:
-                    self.last_audio_level = level
-                    self.logger.warning(f"⚠ Уровень звука ({source_name}): {level:.2f}% - звук не обнаружен!")
-            elif level < 5.0:
-                # Тихий звук
-                if abs(level - self.last_audio_level) > 1.0:
-                    self.last_audio_level = level
-                    self.logger.info(f"🔉 Уровень звука ({source_name}): {level:.1f}% - тихий звук")
-            else:
-                # Нормальный звук
-                if abs(level - self.last_audio_level) > 5.0:
-                    self.last_audio_level = level
-                    self.logger.info(f"🔊 Уровень звука ({source_name}): {level:.1f}% - звук обнаружен")
-        except Exception as e:
-            self.logger.debug(f"Ошибка проверки уровня звука: {e}")
+                    # Fallback - вычисление вручную
+                    if not hasattr(recorder, 'recording_data') or not recorder.recording_data:
+                        continue
+                    
+                    if len(recorder.recording_data) > 0:
+                        last_chunk = recorder.recording_data[-1]
+                        if last_chunk is not None and len(last_chunk) > 0:
+                            rms = np.sqrt(np.mean(last_chunk.astype(np.float32) ** 2))
+                            level = min(100, (rms / 32767.0) * 100)
+                        else:
+                            continue
+                    else:
+                        continue
+                
+                source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                last_level = self.translation_audio_levels.get(source_type, 0.0)
+                
+                # Логировать всегда, но с разными уровнями
+                if level < 1.0:
+                    # Очень тихо или нет звука
+                    if abs(level - last_level) > 0.5:
+                        self.translation_audio_levels[source_type] = level
+                        self.logger.warning(f"⚠ Уровень звука ({source_name}): {level:.2f}% - звук не обнаружен!")
+                elif level < 5.0:
+                    # Тихий звук
+                    if abs(level - last_level) > 1.0:
+                        self.translation_audio_levels[source_type] = level
+                        self.logger.info(f"🔉 Уровень звука ({source_name}): {level:.1f}% - тихий звук")
+                else:
+                    # Нормальный звук
+                    if abs(level - last_level) > 5.0:
+                        self.translation_audio_levels[source_type] = level
+                        self.logger.info(f"🔊 Уровень звука ({source_name}): {level:.1f}% - звук обнаружен")
+            except Exception as e:
+                self.logger.debug(f"Ошибка проверки уровня звука для {source_type}: {e}")
     
     def on_opacity_changed(self, value: int):
         """Обработчик изменения прозрачности"""
@@ -745,7 +744,7 @@ class MainWindow(QMainWindow):
         self.btn_start_meeting.setEnabled(False)
         
         # Проверить конфликт устройств с записью перевода
-        if self.is_recording_translation:
+        if self.translation_recorders:
             # Определить устройство для совещания
             meeting_device_idx = None
             if self.meeting_source_type == AudioSourceType.STEREO_MIX:
@@ -753,26 +752,28 @@ class MainWindow(QMainWindow):
             else:
                 meeting_device_idx = self.selected_microphone_device
             
-            # Определить устройство для перевода
-            translation_device_idx = None
-            if self.current_translation_source == AudioSourceType.STEREO_MIX:
-                translation_device_idx = self.selected_stereo_mix_device
-            else:
-                translation_device_idx = self.selected_microphone_device
-            
-            # Проверить конфликт
-            if meeting_device_idx == translation_device_idx:
-                device_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
-                QMessageBox.warning(
-                    self,
-                    "Конфликт устройств",
-                    f"Невозможно начать запись совещания с {device_name}:\n"
-                    f"Это устройство уже используется для записи перевода.\n\n"
-                    f"Остановите запись перевода или выберите другое устройство для совещания."
-                )
-                # Разблокировать кнопку при ошибке
-                self.btn_start_meeting.setEnabled(True)
-                return
+            # Проверить конфликт с каждым активным переводом
+            for source_type in self.translation_recorders.keys():
+                translation_device_idx = None
+                if source_type == AudioSourceType.STEREO_MIX:
+                    translation_device_idx = self.selected_stereo_mix_device
+                else:
+                    translation_device_idx = self.selected_microphone_device
+                
+                # Проверить конфликт
+                if meeting_device_idx == translation_device_idx:
+                    device_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                    translation_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                    QMessageBox.warning(
+                        self,
+                        "Конфликт устройств",
+                        f"Невозможно начать запись совещания с {device_name}:\n"
+                        f"Это устройство уже используется для записи перевода ({translation_name}).\n\n"
+                        f"Остановите запись перевода или выберите другое устройство для совещания."
+                    )
+                    # Разблокировать кнопку при ошибке
+                    self.btn_start_meeting.setEnabled(True)
+                    return
         
         # Создать совещание и начать запись с указанной папкой
         async def start_meeting_with_path():
@@ -969,7 +970,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Шаблон загружен", f"Шаблон загружен из:\n{template.file_path}")
     
     def toggle_translation_recording(self, source_type: AudioSourceType, checked: bool):
-        """Переключить запись для перевода"""
+        """Переключить запись для перевода (поддержка параллельной записи)"""
         source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
         
         if checked:
@@ -999,20 +1000,17 @@ class MainWindow(QMainWindow):
                         self.btn_listen_us.setChecked(False)
                     return
             
-            # Начать запись
-            if self.is_recording_translation:
-                # Если уже идет запись с другого источника, остановить её
-                self.logger.warning("Остановка предыдущей записи перевода")
-                self._stop_translation_recording()
+            # Проверить, не идет ли уже запись с этого источника
+            if source_type in self.translation_recorders:
+                self.logger.warning(f"Запись с {source_name} уже идет")
+                return
             
             self.logger.info(f"Начало записи для перевода с {source_name}")
-            self.is_recording_translation = True
-            self.current_translation_source = source_type
             
-            # Создать отдельный рекордер для перевода
+            # Создать отдельный рекордер для этого источника
             from infrastructure.external_services.audio.audio_recorder import AudioRecorder
             import os
-            self.translation_recorder = AudioRecorder(
+            recorder = AudioRecorder(
                 sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
                 channels=int(os.getenv("AUDIO_CHANNELS", "2"))
             )
@@ -1030,61 +1028,91 @@ class MainWindow(QMainWindow):
             temp_path = storage.get_temp_audio_path(f"translation_{source_type.value}")
             
             try:
-                self.translation_recorder.start_recording(temp_path, source_type, device_idx)
-                self.label_translation_status.setText(f"Статус: Запись с {source_name}...")
+                recorder.start_recording(temp_path, source_type, device_idx)
                 
-                # Запустить мониторинг уровня звука
-                self.last_audio_level = 0.0
-                self.audio_level_timer.start(1000)  # Проверять каждую секунду
+                # Сохранить рекордер
+                self.translation_recorders[source_type] = recorder
+                self.translation_audio_levels[source_type] = 0.0
+                
+                # Обновить статус
+                active_sources = list(self.translation_recorders.keys())
+                if len(active_sources) == 1:
+                    self.label_translation_status.setText(f"Статус: Запись с {source_name}...")
+                else:
+                    sources_str = ", ".join(["Stereo Mix" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in active_sources])
+                    self.label_translation_status.setText(f"Статус: Запись с {sources_str}...")
+                
+                # Запустить мониторинг уровня звука (если еще не запущен)
+                if not self.audio_level_timer.isActive():
+                    self.audio_level_timer.start(1000)  # Проверять каждую секунду
+                    self.logger.info(f"Мониторинг уровня звука запущен")
+                
                 self.logger.info(f"Мониторинг уровня звука запущен для {source_name}")
                 
                 # Обновить текст кнопки
                 if source_type == AudioSourceType.STEREO_MIX:
                     self.btn_listen_interlocutor.setText("⏹ Остановить запись")
-                    self.btn_listen_us.setEnabled(False)
                 else:
                     self.btn_listen_us.setText("⏹ Остановить запись")
-                    self.btn_listen_interlocutor.setEnabled(False)
             except Exception as e:
                 self.logger.error(f"Ошибка начала записи: {str(e)}")
                 self.on_error(f"Ошибка начала записи: {str(e)}")
-                self.is_recording_translation = False
-                self.current_translation_source = None
+                if source_type in self.translation_recorders:
+                    del self.translation_recorders[source_type]
+                if source_type in self.translation_audio_levels:
+                    del self.translation_audio_levels[source_type]
                 if source_type == AudioSourceType.STEREO_MIX:
                     self.btn_listen_interlocutor.setChecked(False)
                 else:
                     self.btn_listen_us.setChecked(False)
         else:
             # Остановить запись и обработать
-            if self.is_recording_translation and self.current_translation_source == source_type:
-                self._stop_translation_recording()
+            if source_type in self.translation_recorders:
+                self._stop_translation_recording(source_type)
     
-    def _stop_translation_recording(self):
+    def _stop_translation_recording(self, source_type: AudioSourceType):
         """Остановить запись перевода и обработать"""
-        if not self.is_recording_translation or not self.translation_recorder:
+        if source_type not in self.translation_recorders:
             return
         
-        source_type = self.current_translation_source
         source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+        recorder = self.translation_recorders[source_type]
         
         try:
             self.logger.info(f"Остановка записи для перевода с {source_name}")
-            self.label_translation_status.setText("Статус: Обработка...")
+            
+            # Обновить статус
+            remaining_sources = [s for s in self.translation_recorders.keys() if s != source_type]
+            if remaining_sources:
+                sources_str = ", ".join(["Stereo Mix" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in remaining_sources])
+                self.label_translation_status.setText(f"Статус: Запись с {sources_str}... | Обработка {source_name}...")
+            else:
+                self.label_translation_status.setText(f"Статус: Обработка {source_name}...")
             
             # Вычислить средний уровень звука перед остановкой
             try:
-                avg_level = self.translation_recorder.get_audio_level()
-                self.logger.info(f"Средний уровень звука за запись: {avg_level:.1f}%")
+                avg_level = recorder.get_audio_level()
+                self.logger.info(f"Средний уровень звука за запись ({source_name}): {avg_level:.1f}%")
                 if avg_level < 1.0:
                     self.logger.warning(f"⚠ ВНИМАНИЕ: Очень низкий уровень звука ({avg_level:.2f}%) - возможно устройство не работает или звук слишком тихий!")
             except Exception as e:
                 self.logger.debug(f"Не удалось вычислить средний уровень: {e}")
             
             # Остановить запись
-            file_path = self.translation_recorder.stop_recording()
+            file_path = recorder.stop_recording()
             self.logger.info(f"Запись остановлена, файл: {file_path}")
             
-            # Обработать запись
+            # Удалить рекордер из словаря
+            del self.translation_recorders[source_type]
+            if source_type in self.translation_audio_levels:
+                del self.translation_audio_levels[source_type]
+            
+            # Остановить мониторинг уровня звука, если больше нет активных записей
+            if not self.translation_recorders:
+                self.audio_level_timer.stop()
+                self.label_translation_status.setText("Статус: Не записывается")
+            
+            # Обработать запись (передать source_type в callback)
             worker = AsyncWorker(
                 self.translation_service.translate_from_audio_file(
                     file_path=file_path,
@@ -1093,7 +1121,8 @@ class MainWindow(QMainWindow):
                     source_language=self.source_language
                 )
             )
-            worker.finished.connect(self.on_translation_completed)
+            # Использовать lambda для передачи source_type в callback
+            worker.finished.connect(lambda result, st=source_type: self.on_translation_completed(result, st))
             worker.finished.connect(lambda: self._remove_worker(worker))
             worker.error.connect(self.on_error)
             worker.error.connect(lambda: self._remove_worker(worker))
@@ -1103,33 +1132,42 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Ошибка остановки записи: {str(e)}")
             self.on_error(f"Ошибка остановки записи: {str(e)}")
+            # Убедиться, что рекордер удален из словаря
+            if source_type in self.translation_recorders:
+                del self.translation_recorders[source_type]
+            if source_type in self.translation_audio_levels:
+                del self.translation_audio_levels[source_type]
         finally:
-            # Остановить мониторинг уровня звука
-            self.audio_level_timer.stop()
+            # Обновить UI кнопок
+            if source_type == AudioSourceType.STEREO_MIX:
+                self.btn_listen_interlocutor.setText("Выслушать собеседника")
+                self.btn_listen_interlocutor.setChecked(False)
+            else:
+                self.btn_listen_us.setText("Выслушать нас")
+                self.btn_listen_us.setChecked(False)
             
-            # Сбросить состояние
-            self.is_recording_translation = False
-            self.current_translation_source = None
-            self.translation_recorder = None
-            self.last_audio_level = 0.0
-            
-            # Обновить UI
-            self.btn_listen_interlocutor.setText("Выслушать собеседника")
-            self.btn_listen_us.setText("Выслушать нас")
-            self.btn_listen_interlocutor.setEnabled(True)
-            self.btn_listen_us.setEnabled(True)
-            self.btn_listen_interlocutor.setChecked(False)
-            self.btn_listen_us.setChecked(False)
-            self.label_translation_status.setText("Статус: Не записывается")
+            # Обновить статус, если больше нет активных записей
+            if not self.translation_recorders:
+                self.label_translation_status.setText("Статус: Не записывается")
     
-    def on_translation_completed(self, result):
-        """Обработчик завершения перевода"""
+    def on_translation_completed(self, result, source_type: AudioSourceType):
+        """Обработчик завершения перевода с цветовым кодированием"""
         self.logger.info(f"Перевод завершен: {len(result.original_text)} -> {len(result.translated_text)} символов")
         
         from datetime import datetime
         from html import escape
         import re
         timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # Определить цвет в зависимости от источника
+        # Stereo Mix (Выслушать собеседника) - красный
+        # Микрофон (Выслушать нас) - зеленый
+        if source_type == AudioSourceType.STEREO_MIX:
+            text_color = "#DC143C"  # Красный (Crimson)
+            source_label = "Собеседник"
+        else:
+            text_color = "#32CD32"  # Зеленый (LimeGreen)
+            source_label = "Мы"
         
         # Экранировать HTML символы
         original_text_escaped = escape(result.original_text)
@@ -1138,19 +1176,15 @@ class MainWindow(QMainWindow):
         # Обработать оригинальный текст
         current_html = self.text_original.toHtml()
         # Убрать жирный шрифт из всех существующих сообщений
-        # Заменить <b>...</b> на обычный текст
         current_html = re.sub(r'<b>([^<]*)</b>', r'\1', current_html)
-        # Заменить style="font-weight: bold; ..." на style="..."
         current_html = re.sub(r'style="font-weight:\s*bold[^"]*"', 'style="margin: 5px 0;"', current_html)
         current_html = re.sub(r'style="[^"]*font-weight:\s*bold[^"]*"', lambda m: m.group(0).replace('font-weight: bold;', '').replace('font-weight:bold;', ''), current_html)
         
-        # Добавить новое сообщение с жирным шрифтом в начало
-        new_original_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {original_text_escaped}</div>'
+        # Добавить новое сообщение с жирным шрифтом и цветом в начало
+        new_original_html = f'<div style="font-weight: bold; margin: 5px 0; color: {text_color};"><b>[{timestamp}] [{source_label}]</b> {original_text_escaped}</div>'
         if current_html.strip() and '<body' in current_html:
-            # Вставить перед существующим содержимым body
             current_html = re.sub(r'(<body[^>]*>)', r'\1' + new_original_html + '<br>', current_html, count=1)
         else:
-            # Если нет body, создать простую структуру
             current_html = f'<html><body>{new_original_html}</body></html>'
         
         self.text_original.setHtml(current_html)
@@ -1162,8 +1196,8 @@ class MainWindow(QMainWindow):
         current_html = re.sub(r'style="font-weight:\s*bold[^"]*"', 'style="margin: 5px 0;"', current_html)
         current_html = re.sub(r'style="[^"]*font-weight:\s*bold[^"]*"', lambda m: m.group(0).replace('font-weight: bold;', '').replace('font-weight:bold;', ''), current_html)
         
-        # Добавить новое сообщение с жирным шрифтом в начало
-        new_translated_html = f'<div style="font-weight: bold; margin: 5px 0;"><b>[{timestamp}]</b> {translated_text_escaped}</div>'
+        # Добавить новое сообщение с жирным шрифтом и цветом в начало
+        new_translated_html = f'<div style="font-weight: bold; margin: 5px 0; color: {text_color};"><b>[{timestamp}] [{source_label}]</b> {translated_text_escaped}</div>'
         if current_html.strip() and '<body' in current_html:
             current_html = re.sub(r'(<body[^>]*>)', r'\1' + new_translated_html + '<br>', current_html, count=1)
         else:
