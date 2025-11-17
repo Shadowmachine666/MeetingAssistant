@@ -153,14 +153,15 @@ class MeetingService:
         # Сгенерировать отчет
         template_len = len(template_content) if template_content else 0
         is_multipart = total_parts > 1
-        self.logger.info(f"Генерация отчета на языке {target_language}, размер шаблона: {template_len} символов, частей: {total_parts}")
+        self.logger.info(f"[Совещание ID={meeting_id_str}] Генерация отчета на языке '{target_language}' (код), размер шаблона: {template_len} символов, частей: {total_parts}")
+        self.logger.info(f"[Совещание ID={meeting_id_str}] Параметр target_language получен: {target_language}")
         report_content = await self.openai_client.generate_report(
             transcription=transcription,
             template=template_content,
-            language=target_language,
+            language=target_language,  # Используем переданный параметр
             is_multipart=is_multipart
         )
-        self.logger.info(f"Отчет сгенерирован, длина: {len(report_content)} символов")
+        self.logger.info(f"[Совещание ID={meeting_id_str}] Отчет сгенерирован на языке '{target_language}', длина: {len(report_content)} символов")
         
         # Сохранить отчет
         report_path = self.storage_service.save_report(str(meeting_id), report_content)

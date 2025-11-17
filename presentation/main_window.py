@@ -52,12 +52,24 @@ class CollapsibleGroupBox(QWidget):
         self.toggle_button = QPushButton("▼")
         self.toggle_button.setFixedSize(20, 20)
         self.toggle_button.setFlat(True)
+        self.toggle_button.setStyleSheet("""
+            QPushButton {
+                border: none;
+                background-color: transparent;
+                color: #333333;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border-radius: 3px;
+            }
+        """)
         self.toggle_button.clicked.connect(self.toggle_collapse)
         header_layout.addWidget(self.toggle_button)
         
         # Заголовок
         title_label = QLabel(title)
-        title_label.setStyleSheet("font-weight: bold;")
+        title_label.setStyleSheet("font-weight: bold; color: #333333; border: none;")  # Темный текст, без рамки
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         
@@ -246,9 +258,11 @@ class MainWindow(QMainWindow):
         
         # Папка для сохранения
         folder_layout = QHBoxLayout()
-        folder_layout.addWidget(QLabel("Папка записей:"))
+        folder_label = QLabel("Папка записей:")
+        folder_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        folder_layout.addWidget(folder_label)
         self.label_recordings_folder = QLabel("./Recordings")
-        self.label_recordings_folder.setStyleSheet("border: 1px solid gray; padding: 3px;")
+        self.label_recordings_folder.setStyleSheet("border: none; padding: 3px; color: #666666;")  # Без рамки, серый текст
         folder_layout.addWidget(self.label_recordings_folder)
         self.btn_choose_folder = QPushButton("Выбрать папку")
         self.btn_choose_folder.clicked.connect(self.choose_recordings_folder)
@@ -257,7 +271,9 @@ class MainWindow(QMainWindow):
         
         # Выбор устройства для записи совещания
         meeting_device_layout = QHBoxLayout()
-        meeting_device_layout.addWidget(QLabel("Устройство записи:"))
+        device_label = QLabel("Устройство записи:")
+        device_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        meeting_device_layout.addWidget(device_label)
         self.combo_meeting_source = QComboBox()
         self.combo_meeting_source.addItem("Микрофон", AudioSourceType.MICROPHONE)
         self.combo_meeting_source.addItem("Stereo Mix", AudioSourceType.STEREO_MIX)
@@ -269,7 +285,9 @@ class MainWindow(QMainWindow):
         
         # Выбор языка отчета
         report_lang_layout = QHBoxLayout()
-        report_lang_layout.addWidget(QLabel("Язык отчета:"))
+        report_lang_label = QLabel("Язык отчета:")
+        report_lang_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        report_lang_layout.addWidget(report_lang_label)
         self.combo_report_language = QComboBox()
         self.combo_report_language.addItems([lang.display_name for lang in Language])
         self.combo_report_language.setCurrentIndex(0)  # Русский по умолчанию
@@ -281,17 +299,18 @@ class MainWindow(QMainWindow):
         # Статус совещания с таймером
         status_layout = QHBoxLayout()
         self.label_meeting_status = QLabel("Статус: Не начато")
+        self.label_meeting_status.setStyleSheet("border: none;")  # Информационный лейбл без рамки
         status_layout.addWidget(self.label_meeting_status)
         
         # Индикатор записи (красный круг)
         self.recording_indicator = QLabel("●")
-        self.recording_indicator.setStyleSheet("color: gray; font-size: 20px;")
+        self.recording_indicator.setStyleSheet("color: gray; font-size: 20px; border: none;")  # Без рамки
         self.recording_indicator.setVisible(False)
         status_layout.addWidget(self.recording_indicator)
         
         # Таймер записи
         self.label_recording_timer = QLabel("00:00:00")
-        self.label_recording_timer.setStyleSheet("font-weight: bold; color: red;")
+        self.label_recording_timer.setStyleSheet("font-weight: bold; color: red; border: none;")  # Без рамки
         self.label_recording_timer.setVisible(False)
         status_layout.addWidget(self.label_recording_timer)
         
@@ -312,14 +331,18 @@ class MainWindow(QMainWindow):
         
         # Выбор языков
         lang_layout = QHBoxLayout()
-        lang_layout.addWidget(QLabel("Язык оригинала:"))
+        source_lang_label = QLabel("Язык оригинала:")
+        source_lang_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        lang_layout.addWidget(source_lang_label)
         self.combo_source_language = QComboBox()
         self.combo_source_language.addItems([lang.display_name for lang in Language])
         self.combo_source_language.setCurrentIndex(0)  # Русский по умолчанию
         self.combo_source_language.currentIndexChanged.connect(self.on_source_language_changed)
         lang_layout.addWidget(self.combo_source_language)
         
-        lang_layout.addWidget(QLabel("→ Язык перевода:"))
+        target_lang_label = QLabel("→ Язык перевода:")
+        target_lang_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        lang_layout.addWidget(target_lang_label)
         self.combo_target_language = QComboBox()
         self.combo_target_language.addItems([lang.display_name for lang in Language])
         self.combo_target_language.setCurrentIndex(2)  # English по умолчанию
@@ -329,12 +352,16 @@ class MainWindow(QMainWindow):
         
         # Выбор устройств
         device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Микрофон:"))
+        mic_label = QLabel("Микрофон:")
+        mic_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        device_layout.addWidget(mic_label)
         self.combo_microphone = QComboBox()
         self.combo_microphone.currentIndexChanged.connect(self.on_microphone_changed)
         device_layout.addWidget(self.combo_microphone)
         
-        device_layout.addWidget(QLabel("Stereo Mix:"))
+        stereo_label = QLabel("Stereo Mix:")
+        stereo_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        device_layout.addWidget(stereo_label)
         self.combo_stereo_mix = QComboBox()
         self.combo_stereo_mix.currentIndexChanged.connect(self.on_stereo_mix_changed)
         device_layout.addWidget(self.combo_stereo_mix)
@@ -343,8 +370,18 @@ class MainWindow(QMainWindow):
         # Загрузить список устройств
         self.load_audio_devices()
         
-        # Кнопки переводов (toggle buttons)
-        translate_btn_layout = QHBoxLayout()
+        # Статус записи перевода
+        self.label_translation_status = QLabel("Статус: Не записывается")
+        self.label_translation_status.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        translation_layout.addWidget(self.label_translation_status)
+        
+        translation_group.setLayout(translation_layout)
+        layout.addWidget(translation_group)
+        layout.setStretchFactor(translation_group, 0)  # Не растягивается
+        
+        # Кнопки переводов (всегда видны, вне сворачиваемой панели)
+        translation_buttons_group = QGroupBox("Действия переводов")
+        translation_buttons_layout = QHBoxLayout()
         self.btn_listen_interlocutor = QPushButton("Выслушать собеседника")
         self.btn_listen_interlocutor.setCheckable(True)  # Toggle button
         self.btn_listen_interlocutor.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.STEREO_MIX, checked))
@@ -352,17 +389,11 @@ class MainWindow(QMainWindow):
         self.btn_listen_us.setCheckable(True)  # Toggle button
         self.btn_listen_us.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.MICROPHONE, checked))
         
-        translate_btn_layout.addWidget(self.btn_listen_interlocutor)
-        translate_btn_layout.addWidget(self.btn_listen_us)
-        translation_layout.addLayout(translate_btn_layout)
-        
-        # Статус записи перевода
-        self.label_translation_status = QLabel("Статус: Не записывается")
-        translation_layout.addWidget(self.label_translation_status)
-        
-        translation_group.setLayout(translation_layout)
-        layout.addWidget(translation_group)
-        layout.setStretchFactor(translation_group, 0)  # Не растягивается
+        translation_buttons_layout.addWidget(self.btn_listen_interlocutor)
+        translation_buttons_layout.addWidget(self.btn_listen_us)
+        translation_buttons_group.setLayout(translation_buttons_layout)
+        layout.addWidget(translation_buttons_group)
+        layout.setStretchFactor(translation_buttons_group, 0)  # Не растягивается
         
         # Окна текста (в виджете-обертке для stretch)
         text_widget = QWidget()
@@ -400,7 +431,9 @@ class MainWindow(QMainWindow):
         
         # Прозрачность
         opacity_layout = QHBoxLayout()
-        opacity_layout.addWidget(QLabel("Прозрачность:"))
+        opacity_label = QLabel("Прозрачность:")
+        opacity_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        opacity_layout.addWidget(opacity_label)
         self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_opacity.setMinimum(30)
         self.slider_opacity.setMaximum(100)
@@ -408,6 +441,7 @@ class MainWindow(QMainWindow):
         self.slider_opacity.valueChanged.connect(self.on_opacity_changed)
         opacity_layout.addWidget(self.slider_opacity)
         self.label_opacity = QLabel("90%")
+        self.label_opacity.setStyleSheet("border: none; min-width: 40px;")  # Информационный лейбл без рамки
         opacity_layout.addWidget(self.label_opacity)
         settings_layout.addLayout(opacity_layout)
         
@@ -423,6 +457,96 @@ class MainWindow(QMainWindow):
         
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
+    
+    def _apply_global_styles(self):
+        """Применить глобальные стили для UI элементов"""
+        # Глобальные стили для информационных лейблов (без рамок)
+        # Интерактивные элементы (кнопки, комбобоксы) будут иметь свои стили
+        global_style = """
+            /* Информационные лейблы - без рамок */
+            QLabel {
+                border: none;
+                padding: 2px;
+                background-color: transparent;
+            }
+            
+            /* Кнопки - с рамками и hover эффектами */
+            QPushButton {
+                border: 1px solid #0078d4;
+                border-radius: 4px;
+                padding: 6px 12px;
+                background-color: #0078d4;
+                color: white;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #106ebe;
+                border-color: #005a9e;
+            }
+            QPushButton:pressed {
+                background-color: #004578;
+                border-color: #003d6b;
+                border-width: 2px;
+                padding: 5px 11px;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                border-color: #999999;
+                color: #666666;
+            }
+            QPushButton:checked {
+                background-color: #004578;
+                border-color: #003d6b;
+                border-width: 2px;
+                box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+            }
+            
+            /* Комбобоксы - с рамками */
+            QComboBox {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 4px 8px;
+                background-color: white;
+                min-width: 120px;
+            }
+            QComboBox:hover {
+                border-color: #0078d4;
+            }
+            QComboBox:focus {
+                border-color: #0078d4;
+                border-width: 2px;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #333333;
+                margin-right: 5px;
+            }
+            
+            /* QSlider */
+            QSlider::groove:horizontal {
+                border: 1px solid #cccccc;
+                height: 6px;
+                background: #e0e0e0;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #0078d4;
+                border: 1px solid #005a9e;
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #106ebe;
+            }
+        """
+        self.setStyleSheet(global_style)
     
     def setup_window_properties(self):
         """Настроить свойства окна"""
@@ -774,16 +898,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Не загружен шаблон отчета. Загрузите шаблон перед генерацией отчета.")
             return
         
-        self.logger.info("Запрос на генерацию отчета")
+        # Получить выбранный язык отчета перед генерацией
+        selected_language_code = self.report_language.code
+        selected_language_name = self.report_language.display_name
+        
+        self.logger.info(f"Запрос на генерацию отчета. Выбранный язык: {selected_language_name} (код: {selected_language_code})")
         self.btn_generate_report.setEnabled(False)
-        self.label_meeting_status.setText("Статус: Генерация отчета...")
+        self.label_meeting_status.setText(f"Статус: Генерация отчета на {selected_language_name}...")
         
         template_content = self.current_template.content
         
         worker = AsyncWorker(
             self.meeting_service.process_meeting(
                 self.current_meeting.id,
-                self.report_language.code,  # Использовать выбранный язык отчета
+                selected_language_code,  # Использовать выбранный язык отчета
                 template_content
             )
         )
