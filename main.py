@@ -4,11 +4,13 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from application.services.meeting_service import MeetingService
 from application.services.template_service import TemplateService
 from application.services.translation_service import TranslationService
+from core.health.health_checker import HealthChecker
+from core.logging.logger import get_logger
 from infrastructure.external_services.audio.audio_recorder import AudioRecorder
 from infrastructure.external_services.openai.openai_client import OpenAIClient
 from infrastructure.file_system.file_parser import FileParserFactory
@@ -75,27 +77,72 @@ def main():
     from dotenv import load_dotenv
     load_dotenv()
     
-    # Проверить наличие API ключа
-    if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI_API_KEY_1"):
-        print("ОШИБКА: OpenAI API ключ не найден!")
-        print("Создайте файл .env и добавьте OPENAI_API_KEY=sk-...")
-        print("Или скопируйте .env.example в .env и заполните его")
-        sys.exit(1)
+    # Инициализировать логгер
+    logger = get_logger()
+    logger.info("=" * 60)
+    logger.info("Запуск MeetingAssistant")
+    logger.info("=" * 60)
+    
+    # Выполнить проверки готовности
+    logger.info("Выполнение проверок готовности системы...")
+    health_checker = HealthChecker()
+    results = health_checker.check_all()
+    
+    passed, total, all_passed = health_checker.get_summary()
     
     # Создать приложение
     app = QApplication(sys.argv)
     app.setApplicationName("MeetingAssistant")
     
+    # Показать результаты проверок
+    if not all_passed:
+        message = "Проверка готовности системы:\n\n"
+        for result in results:
+            icon = "✓" if result.status else "✗"
+            message += f"{icon} {result.name}: {result.message}\n"
+            if result.details:
+                message += f"   ({result.details})\n"
+        
+        message += f"\nПройдено: {passed}/{total} проверок"
+        
+        if passed == 0:
+            msg_box = QMessageBox()
+            msg_box.setIcon(QMessageBox.Icon.Critical)
+            msg_box.setWindowTitle("Критические ошибки")
+            msg_box.setText(message + "\n\nПриложение не может работать. Исправьте ошибки и перезапустите.")
+            msg_box.exec()
+            logger.error("Критические ошибки обнаружены. Приложение завершено.")
+            sys.exit(1)
+        else:
+            msg_box = QMessageBox()
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setWindowTitle("Предупреждения")
+            msg_box.setText(message + "\n\nНекоторые функции могут работать некорректно.")
+            msg_box.exec()
+    
     # Настроить зависимости
-    meeting_service, translation_service, template_service = setup_dependencies()
+    logger.info("Инициализация сервисов...")
+    try:
+        meeting_service, translation_service, template_service = setup_dependencies()
+        logger.info("Сервисы инициализированы успешно")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации сервисов: {str(e)}", exc_info=True)
+        QMessageBox.critical(
+            None,
+            "Ошибка инициализации",
+            f"Не удалось инициализировать сервисы:\n{str(e)}"
+        )
+        sys.exit(1)
     
     # Создать главное окно
+    logger.info("Создание главного окна...")
     window = MainWindow(
         meeting_service=meeting_service,
         translation_service=translation_service,
         template_service=template_service
     )
     window.show()
+    logger.info("Приложение готово к работе")
     
     # Запустить приложение
     sys.exit(app.exec())

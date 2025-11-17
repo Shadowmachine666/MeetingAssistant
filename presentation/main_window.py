@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from application.services.meeting_service import MeetingService
 from application.services.template_service import TemplateService
 from application.services.translation_service import TranslationService
+from core.logging.logger import get_logger
 from domain.enums.audio_source_type import AudioSourceType
 from domain.enums.language import Language
 from domain.enums.meeting_status import MeetingStatus
@@ -78,9 +79,12 @@ class MainWindow(QMainWindow):
         self.current_template = None
         self.target_language = Language.RUSSIAN
         self.workers = []  # Хранить ссылки на воркеры
+        self.logger = get_logger()
         
+        self.logger.info("Инициализация главного окна...")
         self.init_ui()
         self.setup_window_properties()
+        self.logger.info("Главное окно инициализировано")
     
     def closeEvent(self, event):
         """Обработчик закрытия окна - завершить все потоки"""
@@ -249,6 +253,7 @@ class MainWindow(QMainWindow):
     
     def start_meeting(self):
         """Начать совещание"""
+        self.logger.info("Запрос на начало совещания")
         worker = AsyncWorker(self.meeting_service.start_meeting())
         worker.finished.connect(self.on_meeting_started)
         worker.finished.connect(lambda: self._remove_worker(worker))
@@ -259,6 +264,7 @@ class MainWindow(QMainWindow):
     
     def on_meeting_started(self, meeting):
         """Обработчик начала совещания"""
+        self.logger.info(f"Совещание начато: ID={meeting.id}, время={meeting.start_time}")
         self.current_meeting = meeting
         self.btn_start_meeting.setEnabled(False)
         self.btn_stop_meeting.setEnabled(True)
@@ -266,6 +272,7 @@ class MainWindow(QMainWindow):
     
     def stop_meeting(self):
         """Остановить совещание"""
+        self.logger.info("Запрос на остановку совещания")
         worker = AsyncWorker(self.meeting_service.stop_meeting())
         worker.finished.connect(self.on_meeting_stopped)
         worker.finished.connect(lambda: self._remove_worker(worker))
@@ -276,6 +283,8 @@ class MainWindow(QMainWindow):
     
     def on_meeting_stopped(self, meeting):
         """Обработчик остановки совещания"""
+        duration = (meeting.end_time - meeting.start_time).total_seconds() if meeting.end_time else 0
+        self.logger.info(f"Совещание остановлено: ID={meeting.id}, длительность={duration:.1f} сек")
         self.current_meeting = meeting
         self.btn_start_meeting.setEnabled(True)
         self.btn_stop_meeting.setEnabled(False)
@@ -283,7 +292,10 @@ class MainWindow(QMainWindow):
         
         # Автоматически обработать запись
         if self.current_template:
+            self.logger.info("Начало обработки записи совещания")
             self.process_meeting_recording()
+        else:
+            self.logger.warning("Шаблон не загружен, обработка записи пропущена")
     
     def process_meeting_recording(self):
         """Обработать запись совещания"""
@@ -310,6 +322,7 @@ class MainWindow(QMainWindow):
     
     def on_report_generated(self, report_content: str):
         """Обработчик генерации отчета"""
+        self.logger.info(f"Отчет сгенерирован, длина: {len(report_content)} символов")
         QMessageBox.information(self, "Отчет готов", f"Отчет сгенерирован:\n\n{report_content[:200]}...")
         self.label_meeting_status.setText("Статус: Завершено")
     
@@ -333,11 +346,14 @@ class MainWindow(QMainWindow):
     
     def on_template_loaded(self, template):
         """Обработчик загрузки шаблона"""
+        self.logger.info(f"Шаблон загружен: {template.file_path}, тип: {template.file_type}, размер: {len(template.content)} символов")
         self.current_template = template
         QMessageBox.information(self, "Шаблон загружен", f"Шаблон загружен из:\n{template.file_path}")
     
     def translate_audio(self, source_type: AudioSourceType):
         """Перевести аудио"""
+        source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+        self.logger.info(f"Запрос на перевод с {source_name}, целевой язык: {self.target_language.display_name}")
         worker = AsyncWorker(
             self.translation_service.translate_from_audio(
                 source_type=source_type,
@@ -354,10 +370,12 @@ class MainWindow(QMainWindow):
     
     def on_translation_completed(self, result):
         """Обработчик завершения перевода"""
+        self.logger.info(f"Перевод завершен: {len(result.original_text)} -> {len(result.translated_text)} символов")
         self.text_original.append(result.original_text)
         self.text_translated.append(result.translated_text)
     
     def on_error(self, error_message: str):
         """Обработчик ошибок"""
+        self.logger.error(f"Ошибка: {error_message}", exc_info=True)
         QMessageBox.critical(self, "Ошибка", error_message)
 
