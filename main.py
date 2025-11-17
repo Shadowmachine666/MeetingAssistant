@@ -125,6 +125,30 @@ def main():
     try:
         meeting_service, translation_service, template_service = setup_dependencies()
         logger.info("Сервисы инициализированы успешно")
+        
+        # Проверить и очистить зависшие совещания
+        logger.info("Проверка зависших совещаний...")
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            current_meeting = loop.run_until_complete(meeting_service.meeting_repository.get_current())
+            if current_meeting and current_meeting.status.value == "Recording":
+                logger.warning(f"Обнаружено зависшее совещание: ID={current_meeting.id}, статус={current_meeting.status.value}")
+                # Остановить запись, если она идет
+                try:
+                    if meeting_service.audio_recorder.is_recording:
+                        logger.info("Остановка зависшей записи...")
+                        meeting_service.audio_recorder.stop_recording()
+                except Exception as e:
+                    logger.warning(f"Не удалось остановить запись: {e}")
+                # Изменить статус на Stopped
+                current_meeting.stop()
+                loop.run_until_complete(meeting_service.meeting_repository.save(current_meeting))
+                logger.info("Зависшее совещание исправлено")
+            loop.close()
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке зависших совещаний: {e}")
     except Exception as e:
         logger.error(f"Ошибка инициализации сервисов: {str(e)}", exc_info=True)
         QMessageBox.critical(

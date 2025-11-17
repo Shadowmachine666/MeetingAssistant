@@ -515,6 +515,13 @@ class MainWindow(QMainWindow):
         """Начать совещание"""
         self.logger.info("Запрос на начало совещания")
         
+        # Защита от двойного клика - блокировать кнопку сразу
+        if not self.btn_start_meeting.isEnabled():
+            self.logger.warning("Попытка начать совещание при заблокированной кнопке")
+            return
+        
+        self.btn_start_meeting.setEnabled(False)
+        
         # Проверить конфликт устройств с записью перевода
         if self.is_recording_translation:
             # Определить устройство для совещания
@@ -541,6 +548,8 @@ class MainWindow(QMainWindow):
                     f"Это устройство уже используется для записи перевода.\n\n"
                     f"Остановите запись перевода или выберите другое устройство для совещания."
                 )
+                # Разблокировать кнопку при ошибке
+                self.btn_start_meeting.setEnabled(True)
                 return
         
         # Создать совещание и начать запись с указанной папкой
@@ -568,10 +577,17 @@ class MainWindow(QMainWindow):
         worker = AsyncWorker(start_meeting_with_path())
         worker.finished.connect(self.on_meeting_started)
         worker.finished.connect(lambda: self._remove_worker(worker))
-        worker.error.connect(self.on_error)
+        worker.error.connect(self.on_meeting_start_error)
         worker.error.connect(lambda: self._remove_worker(worker))
         self.workers.append(worker)
         worker.start()
+    
+    def on_meeting_start_error(self, error_message: str):
+        """Обработчик ошибки начала совещания"""
+        self.logger.error(f"Ошибка начала совещания: {error_message}")
+        # Разблокировать кнопку при ошибке
+        self.btn_start_meeting.setEnabled(True)
+        self.on_error(error_message)
     
     def on_meeting_started(self, meeting):
         """Обработчик начала совещания"""
@@ -683,8 +699,23 @@ class MainWindow(QMainWindow):
     def on_report_generated(self, report_content: str):
         """Обработчик генерации отчета"""
         self.logger.info(f"Отчет сгенерирован, длина: {len(report_content)} символов")
-        QMessageBox.information(self, "Отчет готов", f"Отчет сгенерирован:\n\n{report_content[:200]}...")
-        self.label_meeting_status.setText("Статус: Завершено")
+        
+        # Получить путь к сохраненному отчету
+        report_path = None
+        if self.current_meeting and self.current_meeting.report_path:
+            report_path = self.current_meeting.report_path
+        
+        # Определить язык отчета
+        lang_name = self.target_language.display_name
+        
+        # Сформировать сообщение
+        message = f"Отчет сгенерирован на языке: {lang_name}\n\n"
+        if report_path:
+            message += f"Путь к файлу:\n{report_path}\n\n"
+        message += f"Превью отчета:\n{report_content[:200]}..."
+        
+        QMessageBox.information(self, "Отчет готов", message)
+        self.label_meeting_status.setText(f"Статус: Завершено | Язык: {lang_name}")
         self.btn_generate_report.setEnabled(False)
     
     def load_template(self):
