@@ -40,19 +40,28 @@ class ApiKeyPool:
     def _load_keys(self):
         """Загрузить ключи из .env файла"""
         key_index = 0
+        loaded_keys = []
         for i in range(1, 4):  # OPENAI_API_KEY_1, OPENAI_API_KEY_2, OPENAI_API_KEY_3
             key = os.getenv(f"OPENAI_API_KEY_{i}")
             if key and key.strip():
                 self._keys[key_index] = ApiKeyInfo(key=key.strip(), index=key_index)
+                loaded_keys.append(f"OPENAI_API_KEY_{i}")
                 key_index += 1
-                self.logger.debug(f"Загружен API ключ {i} (индекс {key_index - 1})")
+                self.logger.info(f"✅ Загружен API ключ {i} (индекс {key_index - 1}): OPENAI_API_KEY_{i}")
         
         # Fallback на OPENAI_API_KEY если нет пронумерованных ключей
         if not self._keys:
             key = os.getenv("OPENAI_API_KEY")
             if key and key.strip():
                 self._keys[0] = ApiKeyInfo(key=key.strip(), index=0)
-                self.logger.debug("Загружен API ключ из OPENAI_API_KEY")
+                loaded_keys.append("OPENAI_API_KEY")
+                self.logger.info("✅ Загружен API ключ из OPENAI_API_KEY")
+        
+        # Логировать итоговую информацию о загруженных ключах
+        if loaded_keys:
+            self.logger.info(f"📋 Загружено ключей: {len(loaded_keys)} - {', '.join(loaded_keys)}")
+        else:
+            self.logger.warning("⚠️ Не загружено ни одного API ключа")
     
     async def get_available_key(self) -> Optional[str]:
         """Получить доступный ключ (наименее загруженный)"""
