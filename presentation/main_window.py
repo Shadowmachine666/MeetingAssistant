@@ -167,8 +167,11 @@ class MainWindow(QMainWindow):
         
         self.current_meeting = None
         self.current_template = None
-        self.source_language = Language.RUSSIAN  # Язык оригинала
-        self.target_language = Language.RUSSIAN  # Язык перевода
+        # Языки для переводов (отдельные для каждого источника)
+        self.stereo_mix_source_language = Language.RUSSIAN  # Язык оригинала для "Выслушать собеседника"
+        self.stereo_mix_target_language = Language.ENGLISH  # Язык перевода для "Выслушать собеседника"
+        self.microphone_source_language = Language.RUSSIAN  # Язык оригинала для "Выслушать нас"
+        self.microphone_target_language = Language.ENGLISH  # Язык перевода для "Выслушать нас"
         self.report_language = Language.RUSSIAN  # Язык отчета
         self.workers = []  # Хранить ссылки на воркеры
         self.logger = get_logger()
@@ -328,27 +331,6 @@ class MainWindow(QMainWindow):
         translation_group = CollapsibleGroupBox("Переводы в реальном времени")
         translation_layout = QVBoxLayout()
         
-        # Выбор языков
-        lang_layout = QHBoxLayout()
-        source_lang_label = QLabel("Язык оригинала:")
-        source_lang_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
-        lang_layout.addWidget(source_lang_label)
-        self.combo_source_language = QComboBox()
-        self.combo_source_language.addItems([lang.display_name for lang in Language])
-        self.combo_source_language.setCurrentIndex(0)  # Русский по умолчанию
-        self.combo_source_language.currentIndexChanged.connect(self.on_source_language_changed)
-        lang_layout.addWidget(self.combo_source_language)
-        
-        target_lang_label = QLabel("→ Язык перевода:")
-        target_lang_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
-        lang_layout.addWidget(target_lang_label)
-        self.combo_target_language = QComboBox()
-        self.combo_target_language.addItems([lang.display_name for lang in Language])
-        self.combo_target_language.setCurrentIndex(2)  # English по умолчанию
-        self.combo_target_language.currentIndexChanged.connect(self.on_target_language_changed)
-        lang_layout.addWidget(self.combo_target_language)
-        translation_layout.addLayout(lang_layout)
-        
         # Выбор устройств
         device_layout = QHBoxLayout()
         mic_label = QLabel("Микрофон:")
@@ -378,18 +360,71 @@ class MainWindow(QMainWindow):
         layout.addWidget(translation_group)
         layout.setStretchFactor(translation_group, 0)  # Не растягивается
         
-        # Кнопки переводов (всегда видны, вне сворачиваемой панели)
+        # Кнопки переводов с настройками языков (всегда видны, вне сворачиваемой панели)
         translation_buttons_group = QGroupBox("Действия переводов")
         translation_buttons_layout = QHBoxLayout()
+        
+        # Левая колонка: "Выслушать собеседника" с настройками языков
+        interlocutor_column = QVBoxLayout()
         self.btn_listen_interlocutor = QPushButton("Выслушать собеседника")
         self.btn_listen_interlocutor.setCheckable(True)  # Toggle button
         self.btn_listen_interlocutor.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.STEREO_MIX, checked))
+        interlocutor_column.addWidget(self.btn_listen_interlocutor)
+        
+        # Языки для "Выслушать собеседника"
+        interlocutor_lang_layout = QHBoxLayout()
+        interlocutor_source_label = QLabel("Язык:")
+        interlocutor_source_label.setStyleSheet("border: none; font-size: 10px;")  # Информационный лейбл без рамки
+        interlocutor_lang_layout.addWidget(interlocutor_source_label)
+        self.combo_stereo_mix_source_language = QComboBox()
+        self.combo_stereo_mix_source_language.addItems([lang.display_name for lang in Language])
+        self.combo_stereo_mix_source_language.setCurrentIndex(0)  # Русский по умолчанию
+        self.combo_stereo_mix_source_language.currentIndexChanged.connect(self.on_stereo_mix_source_language_changed)
+        interlocutor_lang_layout.addWidget(self.combo_stereo_mix_source_language)
+        
+        interlocutor_arrow_label = QLabel("→")
+        interlocutor_arrow_label.setStyleSheet("border: none; font-size: 10px;")
+        interlocutor_lang_layout.addWidget(interlocutor_arrow_label)
+        
+        self.combo_stereo_mix_target_language = QComboBox()
+        self.combo_stereo_mix_target_language.addItems([lang.display_name for lang in Language])
+        self.combo_stereo_mix_target_language.setCurrentIndex(2)  # English по умолчанию
+        self.combo_stereo_mix_target_language.currentIndexChanged.connect(self.on_stereo_mix_target_language_changed)
+        interlocutor_lang_layout.addWidget(self.combo_stereo_mix_target_language)
+        interlocutor_column.addLayout(interlocutor_lang_layout)
+        
+        # Правая колонка: "Выслушать нас" с настройками языков
+        us_column = QVBoxLayout()
         self.btn_listen_us = QPushButton("Выслушать нас")
         self.btn_listen_us.setCheckable(True)  # Toggle button
         self.btn_listen_us.toggled.connect(lambda checked: self.toggle_translation_recording(AudioSourceType.MICROPHONE, checked))
+        us_column.addWidget(self.btn_listen_us)
         
-        translation_buttons_layout.addWidget(self.btn_listen_interlocutor)
-        translation_buttons_layout.addWidget(self.btn_listen_us)
+        # Языки для "Выслушать нас"
+        us_lang_layout = QHBoxLayout()
+        us_source_label = QLabel("Язык:")
+        us_source_label.setStyleSheet("border: none; font-size: 10px;")  # Информационный лейбл без рамки
+        us_lang_layout.addWidget(us_source_label)
+        self.combo_microphone_source_language = QComboBox()
+        self.combo_microphone_source_language.addItems([lang.display_name for lang in Language])
+        self.combo_microphone_source_language.setCurrentIndex(0)  # Русский по умолчанию
+        self.combo_microphone_source_language.currentIndexChanged.connect(self.on_microphone_source_language_changed)
+        us_lang_layout.addWidget(self.combo_microphone_source_language)
+        
+        us_arrow_label = QLabel("→")
+        us_arrow_label.setStyleSheet("border: none; font-size: 10px;")
+        us_lang_layout.addWidget(us_arrow_label)
+        
+        self.combo_microphone_target_language = QComboBox()
+        self.combo_microphone_target_language.addItems([lang.display_name for lang in Language])
+        self.combo_microphone_target_language.setCurrentIndex(2)  # English по умолчанию
+        self.combo_microphone_target_language.currentIndexChanged.connect(self.on_microphone_target_language_changed)
+        us_lang_layout.addWidget(self.combo_microphone_target_language)
+        us_column.addLayout(us_lang_layout)
+        
+        # Добавить колонки в основной layout
+        translation_buttons_layout.addLayout(interlocutor_column)
+        translation_buttons_layout.addLayout(us_column)
         translation_buttons_group.setLayout(translation_buttons_layout)
         layout.addWidget(translation_buttons_group)
         layout.setStretchFactor(translation_buttons_group, 0)  # Не растягивается
@@ -553,15 +588,25 @@ class MainWindow(QMainWindow):
         flags = self.windowFlags()
         # Можно добавить флаги для прозрачности и т.д.
     
-    def on_source_language_changed(self, index: int):
-        """Обработчик изменения языка оригинала"""
-        self.source_language = list(Language)[index]
-        self.logger.info(f"Язык оригинала изменен на: {self.source_language.display_name}")
+    def on_stereo_mix_source_language_changed(self, index: int):
+        """Обработчик изменения языка оригинала для 'Выслушать собеседника'"""
+        self.stereo_mix_source_language = list(Language)[index]
+        self.logger.info(f"Язык оригинала (Собеседник) изменен на: {self.stereo_mix_source_language.display_name}")
     
-    def on_target_language_changed(self, index: int):
-        """Обработчик изменения языка перевода"""
-        self.target_language = list(Language)[index]
-        self.logger.info(f"Язык перевода изменен на: {self.target_language.display_name}")
+    def on_stereo_mix_target_language_changed(self, index: int):
+        """Обработчик изменения языка перевода для 'Выслушать собеседника'"""
+        self.stereo_mix_target_language = list(Language)[index]
+        self.logger.info(f"Язык перевода (Собеседник) изменен на: {self.stereo_mix_target_language.display_name}")
+    
+    def on_microphone_source_language_changed(self, index: int):
+        """Обработчик изменения языка оригинала для 'Выслушать нас'"""
+        self.microphone_source_language = list(Language)[index]
+        self.logger.info(f"Язык оригинала (Мы) изменен на: {self.microphone_source_language.display_name}")
+    
+    def on_microphone_target_language_changed(self, index: int):
+        """Обработчик изменения языка перевода для 'Выслушать нас'"""
+        self.microphone_target_language = list(Language)[index]
+        self.logger.info(f"Язык перевода (Мы) изменен на: {self.microphone_target_language.display_name}")
     
     def on_meeting_source_changed(self, index: int):
         """Обработчик изменения источника записи совещания"""
@@ -1112,13 +1157,21 @@ class MainWindow(QMainWindow):
                 self.audio_level_timer.stop()
                 self.label_translation_status.setText("Статус: Не записывается")
             
+            # Выбрать языки в зависимости от источника
+            if source_type == AudioSourceType.STEREO_MIX:
+                source_lang = self.stereo_mix_source_language
+                target_lang = self.stereo_mix_target_language
+            else:  # MICROPHONE
+                source_lang = self.microphone_source_language
+                target_lang = self.microphone_target_language
+            
             # Обработать запись (передать source_type в callback)
             worker = AsyncWorker(
                 self.translation_service.translate_from_audio_file(
                     file_path=file_path,
                     source_type=source_type,
-                    target_language=self.target_language,
-                    source_language=self.source_language
+                    target_language=target_lang,
+                    source_language=source_lang
                 )
             )
             # Использовать lambda для передачи source_type в callback
