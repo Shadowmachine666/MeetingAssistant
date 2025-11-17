@@ -1,0 +1,94 @@
+{
+  "template_version": "1.0",
+  "description": "Шаблон отчета совещания для GPT",
+  "instructions": "Проанализируй транскрипт совещания и создай отчет используя следующую структуру. Требования: используй только информацию из транскрипта, будь объективным и точным, выделяй конкретные действия и ответственных, определяй сроки где это возможно, оцени эффективность встречи по шкале 1-5",
+  
+  "structure": {
+    "metadata": {
+      "meeting_id": "MTG-YYYY-MM-001",
+      "meeting_topic": "Тема совещания",
+      "date": "YYYY-MM-DD",
+      "start_time": "HH:MM",
+      "end_time": "HH:MM", 
+      "duration_minutes": 0,
+      "participants": [
+        {
+          "name": "ФИО",
+          "role": "Должность",
+          "department": "Отдел"
+        }
+      ],
+      "location": "Место проведения"
+    },
+    
+    "agenda": {
+      "planned_topics": ["тема 1", "тема 2"],
+      "additional_topics_discussed": ["дополнительная тема"]
+    },
+    
+    "key_decisions": [
+      {
+        "decision": "Принятое решение",
+        "responsible": "Ответственный", 
+        "deadline": "YYYY-MM-DD",
+        "status": "утверждено/в работе"
+      }
+    ],
+    
+    "action_items": [
+      {
+        "task": "Конкретная задача",
+        "assignee": "Исполнитель",
+        "due_date": "YYYY-MM-DD",
+        "priority": "высокий/средний/низкий",
+        "description": "Описание задачи"
+      }
+    ],
+    
+    "discussion_summary": {
+      "main_points": ["основной пункт 1", "пункт 2"],
+      "controversial_issues": [
+        {
+          "issue": "Спорный вопрос",
+          "positions": ["позиция 1", "позиция 2"],
+          "resolution": "Решение"
+        }
+      ],
+      "key_insights": ["важный инсайт"]
+    },
+    
+    "next_meeting": {
+      "scheduled_date": "YYYY-MM-DD",
+      "scheduled_time": "HH:MM", 
+      "topics_for_next_meeting": ["тема 1", "тема 2"]
+    },
+    
+    "metrics": {
+      "participation_rate": "X%",
+      "decision_efficiency": "высокая/средняя/низкая",
+      "meeting_effectiveness_score": 0.0,
+      "topics_covered_percentage": "X%"
+    },
+    
+    "additional_notes": {
+      "important_comments": ["важный комментарий"],
+      "technical_issues": ["техническая проблема"]
+    }
+  },
+  
+  "examples": {
+    "sample_decision": {
+      "decision": "Утвердить дизайн главной страницы",
+      "responsible": "Мария Сидорова",
+      "deadline": "2024-01-25", 
+      "status": "утверждено"
+    },
+    "sample_action_item": {
+      "task": "Подготовить ТЗ для разработчиков",
+      "assignee": "Иван Петров",
+      "due_date": "2024-01-20",
+      "priority": "высокий",
+      "description": "Детальное техническое задание"
+    }
+  }
+}
