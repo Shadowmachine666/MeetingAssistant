@@ -93,10 +93,17 @@ class MainWindow(QMainWindow):
         self.selected_microphone_device = None  # Индекс устройства
         self.selected_stereo_mix_device = None  # Индекс устройства
         
+        # Устройство записи совещания
+        self.meeting_source_type = AudioSourceType.MICROPHONE
+        self.meeting_device_index = None  # Индекс устройства для совещания
+        
         # Таймер для мониторинга уровня звука
         self.audio_level_timer = QTimer()
         self.audio_level_timer.timeout.connect(self.check_audio_level)
         self.last_audio_level = 0.0
+        
+        # Папка для записей
+        self.recordings_folder = "./Recordings"
         
         self.logger.info("Инициализация главного окна...")
         self.init_ui()
@@ -141,23 +148,71 @@ class MainWindow(QMainWindow):
         
         # Кнопки совещания
         btn_layout = QHBoxLayout()
-        self.btn_start_meeting = QPushButton("Записать совещание")
+        self.btn_start_meeting = QPushButton("🔴 Записать совещание")
         self.btn_start_meeting.clicked.connect(self.start_meeting)
-        self.btn_stop_meeting = QPushButton("Остановить запись")
+        self.btn_stop_meeting = QPushButton("⏹ Остановить запись")
         self.btn_stop_meeting.clicked.connect(self.stop_meeting)
         self.btn_stop_meeting.setEnabled(False)
         
         self.btn_load_template = QPushButton("Загрузить пример")
         self.btn_load_template.clicked.connect(self.load_template)
         
+        self.btn_generate_report = QPushButton("📄 ОТЧЕТ")
+        self.btn_generate_report.clicked.connect(self.generate_report)
+        self.btn_generate_report.setEnabled(False)
+        
         btn_layout.addWidget(self.btn_start_meeting)
         btn_layout.addWidget(self.btn_stop_meeting)
         btn_layout.addWidget(self.btn_load_template)
+        btn_layout.addWidget(self.btn_generate_report)
         meeting_layout.addLayout(btn_layout)
         
-        # Статус совещания
+        # Папка для сохранения
+        folder_layout = QHBoxLayout()
+        folder_layout.addWidget(QLabel("Папка записей:"))
+        self.label_recordings_folder = QLabel("./Recordings")
+        self.label_recordings_folder.setStyleSheet("border: 1px solid gray; padding: 3px;")
+        folder_layout.addWidget(self.label_recordings_folder)
+        self.btn_choose_folder = QPushButton("Выбрать папку")
+        self.btn_choose_folder.clicked.connect(self.choose_recordings_folder)
+        folder_layout.addWidget(self.btn_choose_folder)
+        meeting_layout.addLayout(folder_layout)
+        
+        # Выбор устройства для записи совещания
+        meeting_device_layout = QHBoxLayout()
+        meeting_device_layout.addWidget(QLabel("Устройство записи:"))
+        self.combo_meeting_source = QComboBox()
+        self.combo_meeting_source.addItem("Микрофон", AudioSourceType.MICROPHONE)
+        self.combo_meeting_source.addItem("Stereo Mix", AudioSourceType.STEREO_MIX)
+        self.combo_meeting_source.setCurrentIndex(0)  # Микрофон по умолчанию
+        self.combo_meeting_source.currentIndexChanged.connect(self.on_meeting_source_changed)
+        meeting_device_layout.addWidget(self.combo_meeting_source)
+        meeting_device_layout.addStretch()
+        meeting_layout.addLayout(meeting_device_layout)
+        
+        # Статус совещания с таймером
+        status_layout = QHBoxLayout()
         self.label_meeting_status = QLabel("Статус: Не начато")
-        meeting_layout.addWidget(self.label_meeting_status)
+        status_layout.addWidget(self.label_meeting_status)
+        
+        # Индикатор записи (красный круг)
+        self.recording_indicator = QLabel("●")
+        self.recording_indicator.setStyleSheet("color: gray; font-size: 20px;")
+        self.recording_indicator.setVisible(False)
+        status_layout.addWidget(self.recording_indicator)
+        
+        # Таймер записи
+        self.label_recording_timer = QLabel("00:00:00")
+        self.label_recording_timer.setStyleSheet("font-weight: bold; color: red;")
+        self.label_recording_timer.setVisible(False)
+        status_layout.addWidget(self.label_recording_timer)
+        
+        meeting_layout.addLayout(status_layout)
+        
+        # Таймер для обновления времени записи
+        self.recording_timer = QTimer()
+        self.recording_timer.timeout.connect(self.update_recording_timer)
+        self.recording_start_time = None
         
         meeting_group.setLayout(meeting_layout)
         layout.addWidget(meeting_group)
@@ -292,6 +347,17 @@ class MainWindow(QMainWindow):
         self.target_language = list(Language)[index]
         self.logger.info(f"Язык перевода изменен на: {self.target_language.display_name}")
     
+    def on_meeting_source_changed(self, index: int):
+        """Обработчик изменения источника записи совещания"""
+        self.meeting_source_type = self.combo_meeting_source.itemData(index)
+        # Определить индекс устройства
+        if self.meeting_source_type == AudioSourceType.STEREO_MIX:
+            self.meeting_device_index = self.selected_stereo_mix_device
+        else:
+            self.meeting_device_index = self.selected_microphone_device
+        source_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+        self.logger.info(f"Источник записи совещания изменен на: {source_name}")
+    
     def load_audio_devices(self):
         """Загрузить список аудио устройств"""
         try:
@@ -338,6 +404,12 @@ class MainWindow(QMainWindow):
                         self.combo_stereo_mix.setCurrentIndex(i)
                         break
             
+            # Обновить индекс устройства для совещания
+            if self.meeting_source_type == AudioSourceType.STEREO_MIX:
+                self.meeting_device_index = self.selected_stereo_mix_device
+            else:
+                self.meeting_device_index = self.selected_microphone_device
+            
             self.logger.info(f"Загружено микрофонов: {len(microphone_devices)}, Stereo Mix: {len(stereo_mix_devices)}")
             
         except Exception as e:
@@ -351,6 +423,9 @@ class MainWindow(QMainWindow):
                 self.selected_microphone_device = device_idx
                 device_info = sd.query_devices(device_idx)
                 self.logger.info(f"Выбран микрофон: {device_info['name']} (индекс: {device_idx})")
+                # Обновить индекс устройства для совещания, если используется микрофон
+                if self.meeting_source_type == AudioSourceType.MICROPHONE:
+                    self.meeting_device_index = device_idx
     
     def on_stereo_mix_changed(self, index: int):
         """Обработчик изменения Stereo Mix"""
@@ -360,6 +435,9 @@ class MainWindow(QMainWindow):
                 self.selected_stereo_mix_device = device_idx
                 device_info = sd.query_devices(device_idx)
                 self.logger.info(f"Выбран Stereo Mix: {device_info['name']} (индекс: {device_idx})")
+                # Обновить индекс устройства для совещания, если используется Stereo Mix
+                if self.meeting_source_type == AudioSourceType.STEREO_MIX:
+                    self.meeting_device_index = device_idx
     
     def check_audio_level(self):
         """Проверить уровень звука во время записи"""
@@ -436,7 +514,58 @@ class MainWindow(QMainWindow):
     def start_meeting(self):
         """Начать совещание"""
         self.logger.info("Запрос на начало совещания")
-        worker = AsyncWorker(self.meeting_service.start_meeting())
+        
+        # Проверить конфликт устройств с записью перевода
+        if self.is_recording_translation:
+            # Определить устройство для совещания
+            meeting_device_idx = None
+            if self.meeting_source_type == AudioSourceType.STEREO_MIX:
+                meeting_device_idx = self.selected_stereo_mix_device
+            else:
+                meeting_device_idx = self.selected_microphone_device
+            
+            # Определить устройство для перевода
+            translation_device_idx = None
+            if self.current_translation_source == AudioSourceType.STEREO_MIX:
+                translation_device_idx = self.selected_stereo_mix_device
+            else:
+                translation_device_idx = self.selected_microphone_device
+            
+            # Проверить конфликт
+            if meeting_device_idx == translation_device_idx:
+                device_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                QMessageBox.warning(
+                    self,
+                    "Конфликт устройств",
+                    f"Невозможно начать запись совещания с {device_name}:\n"
+                    f"Это устройство уже используется для записи перевода.\n\n"
+                    f"Остановите запись перевода или выберите другое устройство для совещания."
+                )
+                return
+        
+        # Создать совещание и начать запись с указанной папкой
+        async def start_meeting_with_path():
+            meeting = await self.meeting_service.start_meeting()
+            
+            # Получить путь для записи с учетом выбранной папки
+            from infrastructure.storage.storage_service import StorageService
+            storage = StorageService()
+            recording_path = storage.get_recording_path(str(meeting.id), self.recordings_folder)
+            
+            # Начать запись с выбранным устройством
+            self.logger.info(f"Начало записи в файл: {recording_path}, устройство: {self.meeting_source_type.value}")
+            self.meeting_service.audio_recorder.start_recording(
+                recording_path, 
+                source_type=self.meeting_source_type,
+                device_index=self.meeting_device_index
+            )
+            meeting.recording_path = recording_path
+            await self.meeting_service.meeting_repository.save(meeting)
+            self.logger.info("Запись начата успешно")
+            
+            return meeting
+        
+        worker = AsyncWorker(start_meeting_with_path())
         worker.finished.connect(self.on_meeting_started)
         worker.finished.connect(lambda: self._remove_worker(worker))
         worker.error.connect(self.on_error)
@@ -450,6 +579,18 @@ class MainWindow(QMainWindow):
         self.current_meeting = meeting
         self.btn_start_meeting.setEnabled(False)
         self.btn_stop_meeting.setEnabled(True)
+        self.btn_generate_report.setEnabled(False)
+        
+        # Показать индикатор записи
+        self.recording_indicator.setVisible(True)
+        self.recording_indicator.setStyleSheet("color: red; font-size: 20px;")
+        
+        # Запустить таймер
+        from datetime import datetime
+        self.recording_start_time = datetime.now()
+        self.recording_timer.start(1000)  # Обновлять каждую секунду
+        self.update_recording_timer()
+        
         self.label_meeting_status.setText(f"Статус: Запись идет (ID: {str(meeting.id)[:8]})")
     
     def stop_meeting(self):
@@ -470,23 +611,60 @@ class MainWindow(QMainWindow):
         self.current_meeting = meeting
         self.btn_start_meeting.setEnabled(True)
         self.btn_stop_meeting.setEnabled(False)
-        self.label_meeting_status.setText("Статус: Остановлено")
         
-        # Автоматически обработать запись
-        if self.current_template:
-            self.logger.info("Начало обработки записи совещания")
-            self.process_meeting_recording()
-        else:
-            self.logger.warning("Шаблон не загружен, обработка записи пропущена")
+        # Скрыть индикатор записи
+        self.recording_indicator.setVisible(False)
+        self.label_recording_timer.setVisible(False)
+        self.recording_timer.stop()
+        self.recording_start_time = None
+        
+        # Сбросить индекс устройства совещания
+        self.meeting_device_index = None
+        
+        # Показать путь к файлу
+        if meeting.recording_path:
+            file_size = os.path.getsize(meeting.recording_path) / (1024 * 1024)  # MB
+            self.label_meeting_status.setText(f"Статус: Остановлено | Файл: {Path(meeting.recording_path).name} ({file_size:.2f} MB)")
+            self.logger.info(f"Запись сохранена: {meeting.recording_path} ({file_size:.2f} MB)")
+        
+        # Включить кнопку ОТЧЕТ
+        self.btn_generate_report.setEnabled(True)
     
-    def process_meeting_recording(self):
-        """Обработать запись совещания"""
+    def choose_recordings_folder(self):
+        """Выбрать папку для сохранения записей"""
+        from PyQt6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для записей", self.recordings_folder)
+        if folder:
+            self.recordings_folder = folder
+            self.label_recordings_folder.setText(folder)
+            self.logger.info(f"Выбрана папка для записей: {folder}")
+    
+    def update_recording_timer(self):
+        """Обновить таймер записи"""
+        if self.recording_start_time:
+            from datetime import datetime
+            elapsed = (datetime.now() - self.recording_start_time).total_seconds()
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = int(elapsed % 60)
+            self.label_recording_timer.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+            self.label_recording_timer.setVisible(True)
+    
+    def generate_report(self):
+        """Сгенерировать отчет (кнопка ОТЧЕТ)"""
         if not self.current_meeting:
+            QMessageBox.warning(self, "Ошибка", "Нет активного совещания")
             return
         
-        template_content = ""
-        if self.current_template:
-            template_content = self.current_template.content
+        if not self.current_template:
+            QMessageBox.warning(self, "Ошибка", "Не загружен шаблон отчета. Загрузите шаблон перед генерацией отчета.")
+            return
+        
+        self.logger.info("Запрос на генерацию отчета")
+        self.btn_generate_report.setEnabled(False)
+        self.label_meeting_status.setText("Статус: Генерация отчета...")
+        
+        template_content = self.current_template.content
         
         worker = AsyncWorker(
             self.meeting_service.process_meeting(
@@ -507,6 +685,7 @@ class MainWindow(QMainWindow):
         self.logger.info(f"Отчет сгенерирован, длина: {len(report_content)} символов")
         QMessageBox.information(self, "Отчет готов", f"Отчет сгенерирован:\n\n{report_content[:200]}...")
         self.label_meeting_status.setText("Статус: Завершено")
+        self.btn_generate_report.setEnabled(False)
     
     def load_template(self):
         """Загрузить шаблон"""
@@ -537,6 +716,32 @@ class MainWindow(QMainWindow):
         source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
         
         if checked:
+            # Проверить конфликт устройств с записью совещания
+            if self.current_meeting and self.current_meeting.status.value == "Recording":
+                # Определить устройство для перевода
+                translation_device_idx = None
+                if source_type == AudioSourceType.STEREO_MIX:
+                    translation_device_idx = self.selected_stereo_mix_device
+                else:
+                    translation_device_idx = self.selected_microphone_device
+                
+                # Проверить конфликт
+                if translation_device_idx == self.meeting_device_index:
+                    device_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                    QMessageBox.warning(
+                        self, 
+                        "Конфликт устройств", 
+                        f"Невозможно начать запись перевода с {device_name}:\n"
+                        f"Это устройство уже используется для записи совещания.\n\n"
+                        f"Выберите другое устройство или остановите запись совещания."
+                    )
+                    # Сбросить состояние кнопки
+                    if source_type == AudioSourceType.STEREO_MIX:
+                        self.btn_listen_interlocutor.setChecked(False)
+                    else:
+                        self.btn_listen_us.setChecked(False)
+                    return
+            
             # Начать запись
             if self.is_recording_translation:
                 # Если уже идет запись с другого источника, остановить её

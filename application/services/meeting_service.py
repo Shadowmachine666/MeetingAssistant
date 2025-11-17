@@ -1,4 +1,5 @@
 """Сервис управления совещаниями"""
+from pathlib import Path
 from uuid import UUID
 
 from core.exceptions.meeting_exception import (
@@ -13,6 +14,7 @@ from domain.interfaces.meeting_repository import IMeetingRepository
 from domain.interfaces.recording_repository import IRecordingRepository
 from infrastructure.external_services.audio.audio_recorder import AudioRecorder
 from infrastructure.external_services.openai.openai_client import OpenAIClient
+from infrastructure.file_system.audio_splitter import AudioSplitter
 from infrastructure.storage.storage_service import StorageService
 
 
@@ -45,12 +47,9 @@ class MeetingService:
         await self.meeting_repository.save(meeting)
         self.logger.info(f"Совещание создано: ID={meeting.id}")
         
-        # Начать запись
-        recording_path = self.storage_service.get_recording_path(str(meeting.id))
-        self.logger.info(f"Начало записи в файл: {recording_path}")
-        self.audio_recorder.start_recording(recording_path)
-        meeting.recording_path = recording_path
-        self.logger.info("Запись начата успешно")
+        # Начать запись (путь будет определен в UI)
+        # Запись начнется с указанным путем из UI
+        self.logger.info("Запись будет начата с путем из UI")
         
         return meeting
     
@@ -110,10 +109,32 @@ class MeetingService:
             self.logger.error(f"Запись не найдена для совещания: ID={meeting_id}")
             raise MeetingNotStartedException("Запись не найдена")
         
-        # Транскрибировать
-        self.logger.info(f"Начало транскрипции аудио: {recording.file_path}")
-        transcription = await self.openai_client.transcribe_audio(recording.file_path)
-        self.logger.info(f"Транскрипция завершена, длина: {len(transcription)} символов")
+        # Проверить размер файла и разбить на части если нужно
+        audio_splitter = AudioSplitter()
+        audio_files = audio_splitter.split_audio_file(recording.file_path)
+        
+        # Транскрибировать все части
+        self.logger.info(f"Начало транскрипции аудио: {recording.file_path} ({len(audio_files)} частей)")
+        transcriptions = []
+        
+        for i, audio_file in enumerate(audio_files):
+            self.logger.info(f"Транскрипция части {i + 1}/{len(audio_files)}: {Path(audio_file).name}")
+            part_transcription = await self.openai_client.transcribe_audio(audio_file)
+            transcriptions.append(part_transcription)
+            self.logger.info(f"Часть {i + 1} транскрибирована, длина: {len(part_transcription)} символов")
+            
+            # Удалить временный файл части (если это не оригинальный файл)
+            if audio_file != recording.file_path:
+                try:
+                    import os
+                    os.remove(audio_file)
+                    self.logger.debug(f"Удален временный файл части: {audio_file}")
+                except Exception as e:
+                    self.logger.warning(f"Не удалось удалить временный файл: {e}")
+        
+        # Объединить все транскрипции
+        transcription = "\n\n".join(transcriptions)
+        self.logger.info(f"Транскрипция завершена, общая длина: {len(transcription)} символов")
         
         # Сгенерировать отчет
         template_len = len(template_content) if template_content else 0

@@ -24,11 +24,20 @@ class StorageService:
         self.templates_path.mkdir(parents=True, exist_ok=True)
         self.logs_path.mkdir(parents=True, exist_ok=True)
     
-    def get_recording_path(self, meeting_id: str) -> str:
+    def get_recording_path(self, meeting_id: str, custom_path: str = None) -> str:
         """Получить путь для записи совещания"""
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{timestamp}_meeting_{meeting_id[:8]}.wav"
-        return str(self.recordings_path / filename)
+        if custom_path:
+            # Использовать указанную папку
+            custom_dir = Path(custom_path)
+            custom_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"{timestamp}_meeting_{meeting_id[:8]}.wav"
+            return str(custom_dir / filename)
+        else:
+            # Использовать папку по умолчанию
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"{timestamp}_meeting_{meeting_id[:8]}.wav"
+            return str(self.recordings_path / filename)
     
     def get_report_path(self, meeting_id: str) -> str:
         """Получить путь для отчета"""
