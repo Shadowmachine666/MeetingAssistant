@@ -1,5 +1,6 @@
 """Главное окно приложения"""
 import asyncio
+import ctypes
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QFileDialog, QComboBox, QSlider,
     QCheckBox, QMessageBox, QGroupBox, QSizePolicy
 )
+
+# Константы Windows API для скрытия окна от захвата экрана
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+WDA_NONE = 0x00000000
 
 from application.services.meeting_service import MeetingService
 from application.services.template_service import TemplateService
@@ -768,14 +773,42 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(flags)
         self.show()
     
+    def _set_window_display_affinity(self, exclude_from_capture: bool):
+        """Установить флаг исключения окна из захвата экрана
+        
+        Использует Windows API SetWindowDisplayAffinity для скрытия окна
+        от приложений захвата экрана (Zoom, Google Meet, Teams и т.п.)
+        Окно остается видимым на локальном экране, но не видно другим пользователям.
+        """
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            
+            # Настроить функцию для правильной обработки ошибок
+            user32.SetWindowDisplayAffinity.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.DWORD]
+            user32.SetWindowDisplayAffinity.restype = ctypes.wintypes.BOOL
+            
+            hwnd = int(self.winId())
+            flag = WDA_EXCLUDEFROMCAPTURE if exclude_from_capture else WDA_NONE
+            
+            result = user32.SetWindowDisplayAffinity(hwnd, flag)
+            
+            if result:
+                status = "скрыто от захвата экрана" if exclude_from_capture else "видно в захвате экрана"
+                self.logger.info(f"Окно {status}")
+            else:
+                # Получить код ошибки Windows
+                error_code = kernel32.GetLastError()
+                self.logger.warning(
+                    f"Не удалось установить флаг скрытия окна. "
+                    f"Код ошибки Windows: {error_code}"
+                )
+        except Exception as e:
+            self.logger.error(f"Ошибка при установке флага скрытия окна: {e}", exc_info=True)
+    
     def on_hide_screen_changed(self, checked: bool):
         """Обработчик скрытия экрана"""
-        # В Windows можно использовать SetWindowDisplayAffinity
-        # Для простоты пока просто минимизируем окно
-        if checked:
-            self.showMinimized()
-        else:
-            self.showNormal()
+        self._set_window_display_affinity(checked)
     
     def start_meeting(self):
         """Начать совещание"""
