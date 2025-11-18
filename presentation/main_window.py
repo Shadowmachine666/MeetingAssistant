@@ -25,6 +25,10 @@ from PyQt6.QtWidgets import (
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 WDA_NONE = 0x00000000
 
+# Константы Windows API для скрытия окна из панели задач
+GWL_EXSTYLE = -20  # Индекс для расширенных стилей окна
+WS_EX_TOOLWINDOW = 0x00000080  # Скрывает окно из панели задач и Alt+Tab
+
 from application.services.meeting_service import MeetingService
 from application.services.template_service import TemplateService
 from application.services.translation_service import TranslationService
@@ -199,6 +203,9 @@ class MainWindow(QMainWindow):
         
         # Папка для записей
         self.recordings_folder = "./Recordings"
+        
+        # Сохранение исходных расширенных стилей окна для восстановления
+        self.original_ex_style = None
         
         self.logger.info("Инициализация главного окна...")
         self.init_ui()
@@ -806,9 +813,95 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Ошибка при установке флага скрытия окна: {e}", exc_info=True)
     
+    def _set_window_taskbar_visibility(self, hide_from_taskbar: bool):
+        """Скрыть/показать окно в панели задач и Alt+Tab
+        
+        Использует Windows API SetWindowLongPtr для изменения расширенных стилей окна.
+        При скрытии окно не будет видно в панели задач и в Alt+Tab, но останется видимым на экране.
+        """
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            
+            # Для 64-битных систем используем SetWindowLongPtr
+            # Определяем, какая функция доступна
+            if hasattr(user32, 'SetWindowLongPtrW'):
+                set_window_long = user32.SetWindowLongPtrW
+                get_window_long = user32.GetWindowLongPtrW
+            else:
+                # Fallback для старых версий (32-битные или старые API)
+                set_window_long = user32.SetWindowLongW
+                get_window_long = user32.GetWindowLongW
+            
+            # Определить тип LONG_PTR (для 64-битных систем это c_longlong)
+            # В ctypes.wintypes может не быть LONG_PTR, используем c_longlong
+            LONG_PTR_TYPE = getattr(ctypes.wintypes, 'LONG_PTR', ctypes.c_longlong)
+            
+            # Настроить типы аргументов и возвращаемого значения
+            set_window_long.argtypes = [ctypes.wintypes.HWND, ctypes.c_int, LONG_PTR_TYPE]
+            set_window_long.restype = LONG_PTR_TYPE
+            get_window_long.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+            get_window_long.restype = LONG_PTR_TYPE
+            
+            hwnd = int(self.winId())
+            
+            # Сохранить исходные стили при первом вызове
+            if self.original_ex_style is None:
+                self.original_ex_style = get_window_long(hwnd, GWL_EXSTYLE)
+                self.logger.debug(f"Сохранены исходные расширенные стили окна: {self.original_ex_style}")
+            
+            # Получить текущие стили
+            current_style = get_window_long(hwnd, GWL_EXSTYLE)
+            
+            # Сбросить код ошибки перед вызовом SetWindowLongPtr
+            kernel32.SetLastError(0)
+            
+            if hide_from_taskbar:
+                # Добавить WS_EX_TOOLWINDOW для скрытия из панели задач
+                new_style = current_style | WS_EX_TOOLWINDOW
+                status_msg = "скрыто из панели задач"
+            else:
+                # Восстановить исходные стили (убрать WS_EX_TOOLWINDOW)
+                if self.original_ex_style is not None:
+                    new_style = self.original_ex_style
+                else:
+                    # Если исходные стили не сохранены, просто убираем флаг
+                    new_style = current_style & ~WS_EX_TOOLWINDOW
+                status_msg = "показано в панели задач"
+            
+            # Установить новые стили
+            # SetWindowLongPtr возвращает предыдущее значение стилей, не код ошибки
+            previous_style = set_window_long(hwnd, GWL_EXSTYLE, new_style)
+            
+            # Проверить ошибку через GetLastError
+            error_code = kernel32.GetLastError()
+            
+            if error_code == 0:
+                # Обновить окно для применения изменений
+                # Флаги: SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_NOZORDER = 0x0004
+                SWP_FRAMECHANGED = 0x0020
+                user32.SetWindowPos(
+                    hwnd, 0, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+                )
+                self.logger.info(f"Окно {status_msg}")
+            else:
+                self.logger.warning(
+                    f"Не удалось изменить видимость окна в панели задач. "
+                    f"Код ошибки Windows: {error_code}"
+                )
+        except Exception as e:
+            self.logger.error(f"Ошибка при изменении видимости окна в панели задач: {e}", exc_info=True)
+    
     def on_hide_screen_changed(self, checked: bool):
         """Обработчик скрытия экрана"""
+        # Скрыть окно от захвата экрана
         self._set_window_display_affinity(checked)
+        # Скрыть окно из панели задач
+        self._set_window_taskbar_visibility(checked)
     
     def start_meeting(self):
         """Начать совещание"""
