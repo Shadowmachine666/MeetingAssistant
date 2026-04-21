@@ -1,8 +1,9 @@
 """Запись аудио совещания: микрофон + системный звук в один WAV.
 
 Реализация ориентирована на Windows:
-- основной способ захвата системного звука: WASAPI loopback
-- запасной вариант: Stereo Mix (если включен в системе)
+- основной способ захвата системного звука: WASAPI loopback через библиотеку `soundcard`
+  (на практике стабильнее и не зависит от наличия Stereo Mix)
+- запасной вариант: входное устройство Stereo Mix (если включено в системе)
 
 Выходной файл: WAV 16-bit PCM, стерео (2 канала) по умолчанию.
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import wave
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Optional
 
 import numpy as np
@@ -103,6 +104,8 @@ class MeetingAudioRecorder:
 
         self._mic_stream: Optional[sd.InputStream] = None
         self._sys_stream: Optional[sd.InputStream] = None
+        self._sys_thread: Optional[Thread] = None
+        self._sys_thread_error: Optional[Exception] = None
 
         self._mic_chunks: list[np.ndarray] = []
         self._sys_chunks: list[np.ndarray] = []
@@ -115,6 +118,9 @@ class MeetingAudioRecorder:
         self,
         output_path: str,
         *,
+        capture_microphone: bool = True,
+        capture_system_audio: bool = True,
+        system_output_name: Optional[str] = None,
         microphone_device_index: Optional[int] = None,
         stereo_mix_device_index: Optional[int] = None,
         prefer_wasapi_loopback: bool = True,
@@ -123,6 +129,9 @@ class MeetingAudioRecorder:
 
         Args:
             output_path: Путь WAV файла результата.
+            capture_microphone: Если True, писать микрофон.
+            capture_system_audio: Если True, писать системный звук.
+            system_output_name: Имя устройства вывода (speaker) для loopback (soundcard).
             microphone_device_index: Индекс устройства микрофона (sounddevice).
             stereo_mix_device_index: Индекс входного устройства Stereo Mix (fallback).
             prefer_wasapi_loopback: Если True, пробовать WASAPI loopback для системного звука.
@@ -152,54 +161,75 @@ class MeetingAudioRecorder:
             with self._sys_lock:
                 self._sys_chunks.append(indata.copy())
 
-        try:
-            self._mic_stream = sd.InputStream(
-                device=microphone_device_index,
-                channels=1,
-                samplerate=self.sample_rate,
-                callback=mic_callback,
-                dtype=np.int16,
-            )
-            self._mic_stream.start()
-            mic_name = sd.query_devices(microphone_device_index)["name"] if microphone_device_index is not None else "default"
-            self.logger.info(f"Запись микрофона начата: {mic_name}")
-        except Exception as e:
-            self.is_recording = False
-            self._safe_close_streams()
-            raise AudioCaptureException(f"Ошибка начала записи микрофона: {str(e)}")
+        if capture_microphone:
+            try:
+                self._mic_stream = sd.InputStream(
+                    device=microphone_device_index,
+                    channels=1,
+                    samplerate=self.sample_rate,
+                    callback=mic_callback,
+                    dtype=np.int16,
+                )
+                self._mic_stream.start()
+                mic_name = (
+                    sd.query_devices(microphone_device_index)["name"]
+                    if microphone_device_index is not None
+                    else "default"
+                )
+                self.logger.info(f"Запись микрофона начата: {mic_name}")
+            except Exception as e:
+                self.is_recording = False
+                self._safe_close_streams()
+                raise AudioCaptureException(f"Ошибка начала записи микрофона: {str(e)}")
+        else:
+            self.logger.info("Запись микрофона отключена (capture_microphone=False)")
 
         # Запись системного звука
         sys_started = False
         last_error: Optional[Exception] = None
 
-        if prefer_wasapi_loopback:
+        if capture_system_audio and prefer_wasapi_loopback:
             try:
-                wasapi_settings = sd.WasapiSettings(loopback=True)
-                default_output = sd.query_devices(kind="output")
-                output_device_index = None
-                devices = sd.query_devices()
-                for i, dev in enumerate(devices):
-                    if dev.get("name") == default_output.get("name"):
-                        output_device_index = i
-                        break
+                import soundcard as sc  # type: ignore
 
-                self._sys_stream = sd.InputStream(
-                    device=output_device_index,
-                    channels=1,
-                    samplerate=self.sample_rate,
-                    callback=sys_callback,
-                    dtype=np.int16,
-                    extra_settings=wasapi_settings,
-                )
-                self._sys_stream.start()
-                out_name = default_output.get("name", "default output")
-                self.logger.info(f"Запись системного звука через WASAPI loopback начата: {out_name}")
+                self._sys_thread_error = None
+
+                def _run_soundcard_loopback() -> None:
+                    try:
+                        speaker_name = system_output_name or sc.default_speaker().name
+                        loopback_mic = sc.get_microphone(speaker_name, include_loopback=True)
+                        if loopback_mic is None:
+                            raise AudioCaptureException(
+                                f"Не удалось открыть WASAPI loopback для устройства вывода: {speaker_name}"
+                            )
+
+                        self.logger.info(
+                            f"Запись системного звука через WASAPI loopback (soundcard) начата: {loopback_mic.name}"
+                        )
+                        blocksize = 1024
+                        with loopback_mic.recorder(samplerate=self.sample_rate, channels=1) as rec:
+                            while self.is_recording:
+                                data = rec.record(numframes=blocksize)
+                                if data is None:
+                                    continue
+                                # soundcard -> float32 [-1; 1], shape (N, C)
+                                arr = np.asarray(data, dtype=np.float32)
+                                if arr.ndim == 1:
+                                    arr = arr.reshape(-1, 1)
+                                int16_chunk = _float32_to_int16(arr)
+                                with self._sys_lock:
+                                    self._sys_chunks.append(int16_chunk)
+                    except Exception as e:  # pragma: no cover (device/runtime dependent)
+                        self._sys_thread_error = e
+
+                self._sys_thread = Thread(target=_run_soundcard_loopback, daemon=True)
+                self._sys_thread.start()
                 sys_started = True
             except Exception as e:
                 last_error = e
                 self.logger.warning(f"Не удалось запустить WASAPI loopback: {e}")
 
-        if not sys_started:
+        if capture_system_audio and not sys_started:
             try:
                 self._sys_stream = sd.InputStream(
                     device=stereo_mix_device_index,
@@ -217,15 +247,24 @@ class MeetingAudioRecorder:
             except Exception as e:
                 last_error = e
 
-        if not sys_started:
+        if capture_system_audio and not sys_started:
             self.is_recording = False
             self._safe_close_streams()
             raise AudioCaptureException(
                 "Не удалось начать запись системного звука. "
                 "Проверьте поддержку WASAPI loopback и/или включите Stereo Mix в настройках Windows."
             ) from last_error
+        if not capture_system_audio:
+            self.logger.info("Запись системного звука отключена (capture_system_audio=False)")
 
-        self.logger.info("Запись совещания (микрофон + системный звук) начата успешно")
+        if capture_microphone and capture_system_audio:
+            self.logger.info("Запись совещания (микрофон + системный звук) начата успешно")
+        elif capture_microphone:
+            self.logger.info("Запись совещания (только микрофон) начата успешно")
+        elif capture_system_audio:
+            self.logger.info("Запись совещания (только системный звук) начата успешно")
+        else:
+            self.logger.warning("Запись совещания начата без источников (оба отключены)")
 
     def _safe_close_streams(self) -> None:
         """Остановить и закрыть потоки без выброса исключений."""
@@ -251,12 +290,24 @@ class MeetingAudioRecorder:
             raise AudioCaptureException("Не задан путь для сохранения")
 
         self.is_recording = False
+
+        # Дать loopback-потоку корректно завершиться
+        if self._sys_thread is not None:
+            try:
+                self._sys_thread.join(timeout=2.0)
+            except Exception:
+                pass
+
+        sys_thread_error = self._sys_thread_error
         self._safe_close_streams()
 
         with self._mic_lock:
             mic_chunks = list(self._mic_chunks)
         with self._sys_lock:
             sys_chunks = list(self._sys_chunks)
+
+        if sys_thread_error is not None:
+            self.logger.warning(f"Системный звук (loopback) завершился с ошибкой: {sys_thread_error}")
 
         mixed = mix_sources_to_stereo_int16(
             mic_chunks,
@@ -281,6 +332,8 @@ class MeetingAudioRecorder:
         self._output_path = None
         self._mic_chunks = []
         self._sys_chunks = []
+        self._sys_thread = None
+        self._sys_thread_error = None
         return file_path
 
     def get_audio_level(self) -> float:

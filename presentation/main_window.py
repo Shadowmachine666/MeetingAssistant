@@ -194,8 +194,9 @@ class MainWindow(QMainWindow):
         self.selected_stereo_mix_device = None  # Индекс устройства
         
         # Устройство записи совещания
-        self.meeting_source_type = AudioSourceType.MICROPHONE
-        self.meeting_device_index = None  # Индекс устройства для совещания
+        self.meeting_capture_microphone = True
+        self.meeting_capture_system_audio = True
+        self.selected_system_output_name = None  # Имя устройства вывода (soundcard speaker)
         
         # Таймер для мониторинга уровня звука
         self.audio_level_timer = QTimer()
@@ -285,17 +286,29 @@ class MainWindow(QMainWindow):
         
         # Выбор устройства для записи совещания
         meeting_device_layout = QHBoxLayout()
-        device_label = QLabel("Устройство записи:")
+        device_label = QLabel("Режим записи:")
         device_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
         meeting_device_layout.addWidget(device_label)
-        self.combo_meeting_source = QComboBox()
-        self.combo_meeting_source.addItem("Микрофон", AudioSourceType.MICROPHONE)
-        self.combo_meeting_source.addItem("Stereo Mix", AudioSourceType.STEREO_MIX)
-        self.combo_meeting_source.setCurrentIndex(0)  # Микрофон по умолчанию
-        self.combo_meeting_source.currentIndexChanged.connect(self.on_meeting_source_changed)
-        meeting_device_layout.addWidget(self.combo_meeting_source)
+        self.combo_meeting_mode = QComboBox()
+        self.combo_meeting_mode.addItem("Микрофон + системный звук (рекомендуется)", "mic+system")
+        self.combo_meeting_mode.addItem("Только микрофон", "mic")
+        self.combo_meeting_mode.addItem("Только системный звук", "system")
+        self.combo_meeting_mode.setCurrentIndex(0)
+        self.combo_meeting_mode.currentIndexChanged.connect(self.on_meeting_mode_changed)
+        meeting_device_layout.addWidget(self.combo_meeting_mode)
         meeting_device_layout.addStretch()
         meeting_layout.addLayout(meeting_device_layout)
+
+        # Выбор устройства вывода для захвата системного звука (loopback)
+        meeting_output_layout = QHBoxLayout()
+        output_label = QLabel("Системный звук (выход):")
+        output_label.setStyleSheet("border: none;")
+        meeting_output_layout.addWidget(output_label)
+        self.combo_system_output = QComboBox()
+        self.combo_system_output.currentIndexChanged.connect(self.on_system_output_changed)
+        meeting_output_layout.addWidget(self.combo_system_output)
+        meeting_output_layout.addStretch()
+        meeting_layout.addLayout(meeting_output_layout)
         
         # Выбор языка отчета
         report_lang_layout = QHBoxLayout()
@@ -362,6 +375,7 @@ class MainWindow(QMainWindow):
         
         # Загрузить список устройств
         self.load_audio_devices()
+        self.load_system_outputs()
         
         # Статус записи перевода
         self.label_translation_status = QLabel("Статус: Не записывается")
@@ -620,16 +634,60 @@ class MainWindow(QMainWindow):
         self.microphone_target_language = list(Language)[index]
         self.logger.info(f"Язык перевода (Мы) изменен на: {self.microphone_target_language.display_name}")
     
-    def on_meeting_source_changed(self, index: int):
-        """Обработчик изменения источника записи совещания"""
-        self.meeting_source_type = self.combo_meeting_source.itemData(index)
-        # Определить индекс устройства
-        if self.meeting_source_type == AudioSourceType.STEREO_MIX:
-            self.meeting_device_index = self.selected_stereo_mix_device
+    def on_meeting_mode_changed(self, index: int):
+        """Обработчик изменения режима записи совещания"""
+        mode = self.combo_meeting_mode.itemData(index)
+        if mode == "mic+system":
+            self.meeting_capture_microphone = True
+            self.meeting_capture_system_audio = True
+        elif mode == "mic":
+            self.meeting_capture_microphone = True
+            self.meeting_capture_system_audio = False
+        elif mode == "system":
+            self.meeting_capture_microphone = False
+            self.meeting_capture_system_audio = True
         else:
-            self.meeting_device_index = self.selected_microphone_device
-        source_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
-        self.logger.info(f"Источник записи совещания изменен на: {source_name}")
+            self.meeting_capture_microphone = True
+            self.meeting_capture_system_audio = True
+
+        self.combo_system_output.setEnabled(self.meeting_capture_system_audio)
+        self.logger.info(f"Режим записи совещания изменен на: {mode}")
+
+    def on_system_output_changed(self, index: int):
+        """Обработчик изменения устройства вывода для loopback"""
+        output_name = self.combo_system_output.itemData(index)
+        self.selected_system_output_name = output_name
+        if output_name:
+            self.logger.info(f"Выбран выход для системного звука (loopback): {output_name}")
+
+    def load_system_outputs(self) -> None:
+        """Загрузить список устройств вывода (speakers) для loopback записи системного звука."""
+        self.combo_system_output.clear()
+        self.selected_system_output_name = None
+        try:
+            import soundcard as sc  # type: ignore
+
+            speakers = sc.all_speakers()
+            default_sp = sc.default_speaker()
+            default_name = default_sp.name if default_sp is not None else None
+
+            for sp in speakers:
+                self.combo_system_output.addItem(sp.name, sp.name)
+                if self.selected_system_output_name is None:
+                    self.selected_system_output_name = sp.name
+
+            if default_name is not None:
+                for i in range(self.combo_system_output.count()):
+                    if self.combo_system_output.itemData(i) == default_name:
+                        self.combo_system_output.setCurrentIndex(i)
+                        self.selected_system_output_name = default_name
+                        break
+
+            self.combo_system_output.setEnabled(True)
+            self.logger.info(f"Загружено устройств вывода (loopback): {self.combo_system_output.count()}")
+        except Exception as e:
+            self.combo_system_output.setEnabled(False)
+            self.logger.warning(f"Не удалось загрузить устройства вывода (loopback): {e}")
     
     def on_report_language_changed(self, index: int):
         """Обработчик изменения языка отчета"""
@@ -682,12 +740,6 @@ class MainWindow(QMainWindow):
                         self.combo_stereo_mix.setCurrentIndex(i)
                         break
             
-            # Обновить индекс устройства для совещания
-            if self.meeting_source_type == AudioSourceType.STEREO_MIX:
-                self.meeting_device_index = self.selected_stereo_mix_device
-            else:
-                self.meeting_device_index = self.selected_microphone_device
-            
             self.logger.info(f"Загружено микрофонов: {len(microphone_devices)}, Stereo Mix: {len(stereo_mix_devices)}")
             
         except Exception as e:
@@ -701,9 +753,7 @@ class MainWindow(QMainWindow):
                 self.selected_microphone_device = device_idx
                 device_info = sd.query_devices(device_idx)
                 self.logger.info(f"Выбран микрофон: {device_info['name']} (индекс: {device_idx})")
-                # Обновить индекс устройства для совещания, если используется микрофон
-                if self.meeting_source_type == AudioSourceType.MICROPHONE:
-                    self.meeting_device_index = device_idx
+                # Запись совещания выбирает микрофон отдельно (в режиме записи), индекс хранится в selected_microphone_device
     
     def on_stereo_mix_changed(self, index: int):
         """Обработчик изменения Stereo Mix"""
@@ -713,9 +763,7 @@ class MainWindow(QMainWindow):
                 self.selected_stereo_mix_device = device_idx
                 device_info = sd.query_devices(device_idx)
                 self.logger.info(f"Выбран Stereo Mix: {device_info['name']} (индекс: {device_idx})")
-                # Обновить индекс устройства для совещания, если используется Stereo Mix
-                if self.meeting_source_type == AudioSourceType.STEREO_MIX:
-                    self.meeting_device_index = device_idx
+                # Запись совещания использует Stereo Mix только как fallback (selected_stereo_mix_device)
     
     def check_audio_level(self):
         """Проверить уровень звука во время записи (для всех активных записей)"""
@@ -914,9 +962,14 @@ class MainWindow(QMainWindow):
         
         self.btn_start_meeting.setEnabled(False)
         
-        # Проверить конфликт устройств с записью перевода (совещание использует микрофон + системный звук)
+        # Проверить конфликт устройств с записью перевода
         if self.translation_recorders:
-            meeting_devices = {self.selected_microphone_device, self.selected_stereo_mix_device}
+            meeting_devices = set()
+            if self.meeting_capture_microphone:
+                meeting_devices.add(self.selected_microphone_device)
+            if self.meeting_capture_system_audio:
+                # Stereo Mix используется как запасной вариант для системного звука
+                meeting_devices.add(self.selected_stereo_mix_device)
             meeting_devices.discard(None)
             for source_type in self.translation_recorders.keys():
                 translation_device_idx = (
@@ -945,10 +998,16 @@ class MainWindow(QMainWindow):
             storage = StorageService()
             recording_path = storage.get_recording_path(str(meeting.id), self.recordings_folder)
             
-            # Начать запись: микрофон + системный звук в один файл
-            self.logger.info(f"Начало записи совещания (микрофон + системный звук) в файл: {recording_path}")
+            # Начать запись совещания согласно выбранному режиму
+            self.logger.info(
+                f"Начало записи совещания в файл: {recording_path} "
+                f"(mic={self.meeting_capture_microphone}, system={self.meeting_capture_system_audio})"
+            )
             self.meeting_service.audio_recorder.start_recording(
                 recording_path,
+                capture_microphone=self.meeting_capture_microphone,
+                capture_system_audio=self.meeting_capture_system_audio,
+                system_output_name=self.selected_system_output_name,
                 microphone_device_index=self.selected_microphone_device,
                 stereo_mix_device_index=self.selected_stereo_mix_device,
                 prefer_wasapi_loopback=True,
@@ -1019,8 +1078,7 @@ class MainWindow(QMainWindow):
         self.recording_timer.stop()
         self.recording_start_time = None
         
-        # Сбросить индекс устройства совещания
-        self.meeting_device_index = None
+        # Сбросить состояние (устройство выбирается отдельно через комбобоксы)
         
         # Показать путь к файлу
         if meeting.recording_path:
@@ -1145,8 +1203,12 @@ class MainWindow(QMainWindow):
                 else:
                     translation_device_idx = self.selected_microphone_device
                 
-                # Проверить конфликт (совещание использует микрофон + системный звук)
-                meeting_devices = {self.selected_microphone_device, self.selected_stereo_mix_device}
+                # Проверить конфликт (совещание может использовать микрофон и/или Stereo Mix как fallback)
+                meeting_devices = set()
+                if self.meeting_capture_microphone:
+                    meeting_devices.add(self.selected_microphone_device)
+                if self.meeting_capture_system_audio:
+                    meeting_devices.add(self.selected_stereo_mix_device)
                 meeting_devices.discard(None)
                 if translation_device_idx in meeting_devices:
                     device_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
