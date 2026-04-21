@@ -914,35 +914,25 @@ class MainWindow(QMainWindow):
         
         self.btn_start_meeting.setEnabled(False)
         
-        # Проверить конфликт устройств с записью перевода
+        # Проверить конфликт устройств с записью перевода (совещание использует микрофон + системный звук)
         if self.translation_recorders:
-            # Определить устройство для совещания
-            meeting_device_idx = None
-            if self.meeting_source_type == AudioSourceType.STEREO_MIX:
-                meeting_device_idx = self.selected_stereo_mix_device
-            else:
-                meeting_device_idx = self.selected_microphone_device
-            
-            # Проверить конфликт с каждым активным переводом
+            meeting_devices = {self.selected_microphone_device, self.selected_stereo_mix_device}
+            meeting_devices.discard(None)
             for source_type in self.translation_recorders.keys():
-                translation_device_idx = None
-                if source_type == AudioSourceType.STEREO_MIX:
-                    translation_device_idx = self.selected_stereo_mix_device
-                else:
-                    translation_device_idx = self.selected_microphone_device
-                
-                # Проверить конфликт
-                if meeting_device_idx == translation_device_idx:
-                    device_name = "Stereo Mix" if self.meeting_source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                translation_device_idx = (
+                    self.selected_stereo_mix_device
+                    if source_type == AudioSourceType.STEREO_MIX
+                    else self.selected_microphone_device
+                )
+                if translation_device_idx in meeting_devices:
                     translation_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
                     QMessageBox.warning(
                         self,
                         "Конфликт устройств",
-                        f"Невозможно начать запись совещания с {device_name}:\n"
-                        f"Это устройство уже используется для записи перевода ({translation_name}).\n\n"
-                        f"Остановите запись перевода или выберите другое устройство для совещания."
+                        "Невозможно начать запись совещания:\n"
+                        f"Одно из устройств (микрофон/системный звук) уже используется для записи перевода ({translation_name}).\n\n"
+                        "Остановите запись перевода или выберите другое устройство."
                     )
-                    # Разблокировать кнопку при ошибке
                     self.btn_start_meeting.setEnabled(True)
                     return
         
@@ -955,12 +945,13 @@ class MainWindow(QMainWindow):
             storage = StorageService()
             recording_path = storage.get_recording_path(str(meeting.id), self.recordings_folder)
             
-            # Начать запись с выбранным устройством
-            self.logger.info(f"Начало записи в файл: {recording_path}, устройство: {self.meeting_source_type.value}")
+            # Начать запись: микрофон + системный звук в один файл
+            self.logger.info(f"Начало записи совещания (микрофон + системный звук) в файл: {recording_path}")
             self.meeting_service.audio_recorder.start_recording(
-                recording_path, 
-                source_type=self.meeting_source_type,
-                device_index=self.meeting_device_index
+                recording_path,
+                microphone_device_index=self.selected_microphone_device,
+                stereo_mix_device_index=self.selected_stereo_mix_device,
+                prefer_wasapi_loopback=True,
             )
             meeting.recording_path = recording_path
             await self.meeting_service.meeting_repository.save(meeting)
@@ -1154,8 +1145,10 @@ class MainWindow(QMainWindow):
                 else:
                     translation_device_idx = self.selected_microphone_device
                 
-                # Проверить конфликт
-                if translation_device_idx == self.meeting_device_index:
+                # Проверить конфликт (совещание использует микрофон + системный звук)
+                meeting_devices = {self.selected_microphone_device, self.selected_stereo_mix_device}
+                meeting_devices.discard(None)
+                if translation_device_idx in meeting_devices:
                     device_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
                     QMessageBox.warning(
                         self, 

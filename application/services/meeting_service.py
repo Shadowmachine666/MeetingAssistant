@@ -10,9 +10,9 @@ from core.exceptions.meeting_exception import (
 from core.logging.logger import get_logger
 from domain.entities.meeting import Meeting
 from domain.entities.meeting_recording import MeetingRecording
+from domain.interfaces.audio_recorder import IAudioRecorder
 from domain.interfaces.meeting_repository import IMeetingRepository
 from domain.interfaces.recording_repository import IRecordingRepository
-from infrastructure.external_services.audio.audio_recorder import AudioRecorder
 from infrastructure.external_services.openai.openai_client import OpenAIClient
 from infrastructure.file_system.audio_splitter import AudioSplitter
 from infrastructure.storage.storage_service import StorageService
@@ -24,7 +24,7 @@ class MeetingService:
     def __init__(self,
                  meeting_repository: IMeetingRepository,
                  recording_repository: IRecordingRepository,
-                 audio_recorder: AudioRecorder,
+                 audio_recorder: IAudioRecorder,
                  storage_service: StorageService,
                  openai_client: OpenAIClient):
         self.meeting_repository = meeting_repository
@@ -69,7 +69,10 @@ class MeetingService:
         # Создать запись
         import os
         file_size = os.path.getsize(file_path)
-        duration = file_size / (44100 * 2 * 2)  # Примерная длительность
+        bytes_per_sample = 2  # 16-bit PCM
+        channels = int(getattr(self.audio_recorder, "channels", 2))
+        sample_rate = int(getattr(self.audio_recorder, "sample_rate", 44100))
+        duration = file_size / (sample_rate * channels * bytes_per_sample)  # Примерная длительность
         self.logger.info(f"Размер файла: {file_size} байт, примерная длительность: {duration:.1f} сек")
         
         recording = MeetingRecording.create(

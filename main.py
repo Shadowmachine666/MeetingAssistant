@@ -12,6 +12,7 @@ from application.services.translation_service import TranslationService
 from core.health.health_checker import HealthChecker
 from core.logging.logger import get_logger
 from infrastructure.external_services.audio.audio_recorder import AudioRecorder
+from infrastructure.external_services.audio.meeting_audio_recorder import MeetingAudioRecorder
 from infrastructure.external_services.openai.openai_client import OpenAIClient
 from infrastructure.file_system.file_parser import FileParserFactory
 from infrastructure.repositories.meeting_repository import MeetingRepository
@@ -49,6 +50,12 @@ def setup_dependencies():
         sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
         channels=int(os.getenv("AUDIO_CHANNELS", "2"))
     )
+    meeting_audio_recorder = MeetingAudioRecorder(
+        sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
+        channels=int(os.getenv("AUDIO_CHANNELS", "2")),
+        microphone_gain=float(os.getenv("MEETING_MICROPHONE_GAIN", "1.0")),
+        system_gain=float(os.getenv("MEETING_SYSTEM_GAIN", "1.0")),
+    )
     
     # File system
     file_parser_factory = FileParserFactory()
@@ -57,7 +64,7 @@ def setup_dependencies():
     meeting_service = MeetingService(
         meeting_repository=meeting_repository,
         recording_repository=recording_repository,
-        audio_recorder=audio_recorder,
+        audio_recorder=meeting_audio_recorder,
         storage_service=storage_service,
         openai_client=openai_client
     )
