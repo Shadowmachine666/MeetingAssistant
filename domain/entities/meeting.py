@@ -17,6 +17,7 @@ class Meeting:
     recording_path: Optional[str] = None
     report_path: Optional[str] = None
     template_path: Optional[str] = None
+    transcription_path: Optional[str] = None
     
     @classmethod
     def create(cls) -> "Meeting":

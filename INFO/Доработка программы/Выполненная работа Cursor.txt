@@ -1,0 +1,62 @@
+Готово — план реализован полностью
+Удалённая транскрипция + диаризация (HF Spaces)
+
+Добавлен клиент HFSpacesTranscriptionClient и модели результата:
+infrastructure/external_services/transcription/hf_spaces_client.py
+infrastructure/external_services/transcription/models.py
+Новый пайплайн обработки совещания (без чанков 20MB Whisper API)
+
+Добавлен TranscriptionService и интегрирован в MeetingService.process_meeting():
+application/services/transcription_service.py
+application/services/meeting_service.py теперь по умолчанию использует HF backend
+Legacy-режим с OpenAI Whisper+чанками оставлен как fallback через env MEETING_USE_OPENAI_WHISPER=true
+Очистка спикеров перед отчётом (GPT‑4o)
+
+Добавлен сервис:
+application/services/speaker_cleanup_service.py
+Добавлен универсальный метод:
+OpenAIClient.chat_completion() в infrastructure/external_services/openai/openai_client.py
+Сохранение final_report.json
+
+В StorageService добавлено:
+get_final_report_json_path()
+save_final_report_json()
+MeetingService.process_meeting() теперь сохраняет final_report_*.json (если ответ отчёта — JSON, сохранит распарсенный dict, иначе — в поле report).
+Загрузка существующего WAV и генерация отчёта
+
+В UI добавлена кнопка 🎧 Загрузить аудио
+Добавлен метод MeetingService.create_meeting_from_audio_file() для сценария “у меня уже есть запись”
+После загрузки WAV кнопка «ОТЧЁТ» становится доступной, как только загружен шаблон.
+Оценка токенов/стоимости
+
+Добавлен CostEstimatorService (эвристика по длине текста) и логирование оценки в process_meeting():
+application/services/cost_estimator_service.py
+Тесты (pytest)
+
+Добавлены unit-тесты на модели, storage, estimator, prompt builder.
+Все тесты проходят: 10 passed.
+Что нужно настроить (env) для удалённого режима
+В .env добавьте (пример):
+
+TRANSCRIPTION_BACKEND=hf_spaces
+HF_SPACES_URL=https://<ваш-space>.hf.space
+HF_SPACES_ENDPOINT=/transcribe
+HF_SPACES_TOKEN=...   # если Space приватный
+SPEAKER_CLEANUP_ENABLED=true
+OPENAI_SPEAKER_CLEANUP_MODEL=gpt-4o
+MEETING_USE_OPENAI_WHISPER=false
+Ожидаемый формат ответа HF Spaces API
+POST {HF_SPACES_URL}{HF_SPACES_ENDPOINT} multipart:
+
+file: WAV
+diarize: true|false
+Response JSON (минимум):
+
+{
+  "segments": [
+    {"start": 0.0, "end": 1.0, "speaker": "Speaker 0", "text": "Hello"}
+  ],
+  "language": "ru",
+  "plain_text": "..."
+}
+Если хотите — следующим шагом могу помочь вам быстро сделать HF Space, который возвращает точно этот JSON на базе вашего Colab-кода (WhisperX+pyannote 3.1), чтобы приложение “из коробки” заработало с удалённой обработкой.

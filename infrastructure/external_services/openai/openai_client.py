@@ -201,6 +201,34 @@ class OpenAIClient:
         )
         
         return response["choices"][0]["message"]["content"].strip()
+
+    async def chat_completion(
+        self,
+        *,
+        prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """Выполнить chat completion и вернуть текст ответа.
+
+        Args:
+            prompt: Пользовательский промпт.
+            model: Модель (если не указано, используется `OPENAI_MODEL`).
+            max_tokens: Лимит токенов ответа.
+            temperature: Температура.
+        """
+        response = await self._make_request(
+            "POST",
+            "chat/completions",
+            json={
+                "model": model or self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+                "temperature": temperature if temperature is not None else self.temperature,
+            },
+        )
+        return response["choices"][0]["message"]["content"].strip()
     
     async def generate_report(self, transcription: str, template: str, language: str, is_multipart: bool = False) -> str:
         """Сгенерировать отчет на основе транскрипции и шаблона

@@ -41,7 +41,7 @@ class HealthChecker:
         # Проверки
         self._check_openai_api()
         self._check_microphone()
-        self._check_stereo_mix()
+        self._check_speakers()
         self._check_storage_directories()
         self._check_dependencies()
         
@@ -179,54 +179,37 @@ class HealthChecker:
             self.results.append(result)
             self.logger.error(f"  {result}")
     
-    def _check_stereo_mix(self):
-        """Проверка Stereo Mix (Miks stereo)"""
-        self.logger.info("Проверка Stereo Mix...")
-        
+    def _check_speakers(self):
+        """Проверка устройств вывода (для WASAPI loopback)"""
+        self.logger.info("Проверка устройств вывода (для loopback)...")
         try:
-            devices = sd.query_devices()
-            
-            # Поиск Stereo Mix / Miks stereo
-            stereo_mix_found = False
-            stereo_mix_name = None
-            
-            for device in devices:
-                name_lower = device['name'].lower()
-                # Проверяем как устройства ввода (для записи системного звука)
-                if device['max_input_channels'] > 0:
-                    if ('stereo mix' in name_lower or 
-                        'what u hear' in name_lower or 
-                        'wave out mix' in name_lower or
-                        'miks stereo' in name_lower):
-                        stereo_mix_found = True
-                        stereo_mix_name = device['name']
-                        break
-            
-            if stereo_mix_found:
+            import soundcard as sc  # type: ignore
+            speakers = sc.all_speakers()
+            default = sc.default_speaker()
+            if not speakers:
                 result = HealthCheckResult(
-                    "Stereo Mix",
-                    True,
-                    f"Stereo Mix найден: {stereo_mix_name}",
-                    "Можно записывать звук системы (собеседника)"
-                )
-                self.logger.info(f"  {result}")
-            else:
-                result = HealthCheckResult(
-                    "Stereo Mix",
+                    "Устройства вывода",
                     False,
-                    "Stereo Mix не найден",
-                    "Включите Stereo Mix (Miks stereo) в настройках Windows: Звук → Устройства входа → Включить стерео микширование"
+                    "Не найдено ни одного устройства вывода",
+                    "Подключите наушники/колонки или проверьте драйверы аудио",
                 )
-                self.logger.warning(f"  {result}")
-            
+            else:
+                names = ", ".join(s.name for s in speakers[:3])
+                result = HealthCheckResult(
+                    "Устройства вывода",
+                    True,
+                    f"Найдено: {len(speakers)} (по умолчанию: {default.name if default else '-'})",
+                    f"Доступны для loopback: {names}"
+                    + (" ..." if len(speakers) > 3 else ""),
+                )
+            self.logger.info(f"  {result}")
             self.results.append(result)
-            
         except Exception as e:
             result = HealthCheckResult(
-                "Stereo Mix",
+                "Устройства вывода",
                 False,
-                "Ошибка проверки",
-                str(e)
+                "Не удалось перечислить выходы (soundcard)",
+                str(e),
             )
             self.results.append(result)
             self.logger.error(f"  {result}")

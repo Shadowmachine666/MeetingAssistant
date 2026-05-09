@@ -176,6 +176,8 @@ class MainWindow(QMainWindow):
         
         self.current_meeting = None
         self.current_template = None
+        self.current_transcript_text: Optional[str] = None
+        self.current_transcript_path: Optional[str] = None
         # Языки для переводов (отдельные для каждого источника)
         self.stereo_mix_source_language = Language.RUSSIAN  # Язык оригинала для "Выслушать собеседника"
         self.stereo_mix_target_language = Language.ENGLISH  # Язык перевода для "Выслушать собеседника"
@@ -258,15 +260,19 @@ class MainWindow(QMainWindow):
         self.btn_stop_meeting.clicked.connect(self.stop_meeting)
         self.btn_stop_meeting.setEnabled(False)
         
+        self.btn_load_transcript = QPushButton("📝 Загрузить транскрипт")
+        self.btn_load_transcript.clicked.connect(self.load_transcript)
+
         self.btn_load_template = QPushButton("Загрузить пример")
         self.btn_load_template.clicked.connect(self.load_template)
-        
+
         self.btn_generate_report = QPushButton("📄 ОТЧЕТ")
         self.btn_generate_report.clicked.connect(self.generate_report)
         self.btn_generate_report.setEnabled(False)
-        
+
         btn_layout.addWidget(self.btn_start_meeting)
         btn_layout.addWidget(self.btn_stop_meeting)
+        btn_layout.addWidget(self.btn_load_transcript)
         btn_layout.addWidget(self.btn_load_template)
         btn_layout.addWidget(self.btn_generate_report)
         meeting_layout.addLayout(btn_layout)
@@ -307,6 +313,9 @@ class MainWindow(QMainWindow):
         self.combo_system_output = QComboBox()
         self.combo_system_output.currentIndexChanged.connect(self.on_system_output_changed)
         meeting_output_layout.addWidget(self.combo_system_output)
+        self.btn_refresh_devices = QPushButton("🔄 Обновить устройства")
+        self.btn_refresh_devices.clicked.connect(self.refresh_audio_devices)
+        meeting_output_layout.addWidget(self.btn_refresh_devices)
         meeting_output_layout.addStretch()
         meeting_layout.addLayout(meeting_output_layout)
         
@@ -356,24 +365,28 @@ class MainWindow(QMainWindow):
         translation_group = CollapsibleGroupBox("Переводы в реальном времени")
         translation_layout = QVBoxLayout()
         
-        # Выбор устройств
+        # Выбор устройства микрофона (для «Выслушать нас»). Для собеседника
+        # используется WASAPI loopback с устройства вывода, выбранного в группе
+        # «Управление совещанием» — отдельный комбобокс не нужен.
         device_layout = QHBoxLayout()
         mic_label = QLabel("Микрофон:")
-        mic_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
+        mic_label.setStyleSheet("border: none;")
         device_layout.addWidget(mic_label)
         self.combo_microphone = QComboBox()
         self.combo_microphone.currentIndexChanged.connect(self.on_microphone_changed)
         device_layout.addWidget(self.combo_microphone)
-        
-        stereo_label = QLabel("Stereo Mix:")
-        stereo_label.setStyleSheet("border: none;")  # Информационный лейбл без рамки
-        device_layout.addWidget(stereo_label)
-        self.combo_stereo_mix = QComboBox()
-        self.combo_stereo_mix.currentIndexChanged.connect(self.on_stereo_mix_changed)
-        device_layout.addWidget(self.combo_stereo_mix)
+        device_layout.addStretch()
         translation_layout.addLayout(device_layout)
-        
-        # Загрузить список устройств
+
+        info_label = QLabel(
+            "ℹ️  Собеседника слышим через тот же выход, что выбран выше "
+            "(«Системный звук (выход)»). Работает с BT-наушниками, проводными и колонками."
+        )
+        info_label.setStyleSheet("border: none; color: #555555; font-size: 10px;")
+        info_label.setWordWrap(True)
+        translation_layout.addWidget(info_label)
+
+        # Загрузить список устройств (init)
         self.load_audio_devices()
         self.load_system_outputs()
         
@@ -714,33 +727,29 @@ class MainWindow(QMainWindow):
                     else:
                         microphone_devices.append((i, dev['name']))
             
-            # Заполнить комбобоксы
+            # Заполнить комбобокс микрофонов (исключая Stereo Mix-устройства,
+            # т.к. для системного звука используется loopback)
             self.combo_microphone.clear()
             for idx, name in microphone_devices:
                 self.combo_microphone.addItem(name, idx)
                 if self.selected_microphone_device is None:
                     self.selected_microphone_device = idx
-            
-            self.combo_stereo_mix.clear()
-            for idx, name in stereo_mix_devices:
-                self.combo_stereo_mix.addItem(name, idx)
-                if self.selected_stereo_mix_device is None:
-                    self.selected_stereo_mix_device = idx
-            
-            # Установить выбранные устройства
+
+            # Stereo Mix храним только как fallback для записи совещания (если loopback не сработает)
+            if stereo_mix_devices and self.selected_stereo_mix_device is None:
+                self.selected_stereo_mix_device = stereo_mix_devices[0][0]
+
+            # Установить выбранный микрофон
             if self.selected_microphone_device is not None:
                 for i in range(self.combo_microphone.count()):
                     if self.combo_microphone.itemData(i) == self.selected_microphone_device:
                         self.combo_microphone.setCurrentIndex(i)
                         break
-            
-            if self.selected_stereo_mix_device is not None:
-                for i in range(self.combo_stereo_mix.count()):
-                    if self.combo_stereo_mix.itemData(i) == self.selected_stereo_mix_device:
-                        self.combo_stereo_mix.setCurrentIndex(i)
-                        break
-            
-            self.logger.info(f"Загружено микрофонов: {len(microphone_devices)}, Stereo Mix: {len(stereo_mix_devices)}")
+
+            self.logger.info(
+                f"Загружено микрофонов: {len(microphone_devices)}, "
+                f"Stereo Mix-fallback: {len(stereo_mix_devices)}"
+            )
             
         except Exception as e:
             self.logger.error(f"Ошибка загрузки устройств: {e}")
@@ -753,17 +762,23 @@ class MainWindow(QMainWindow):
                 self.selected_microphone_device = device_idx
                 device_info = sd.query_devices(device_idx)
                 self.logger.info(f"Выбран микрофон: {device_info['name']} (индекс: {device_idx})")
-                # Запись совещания выбирает микрофон отдельно (в режиме записи), индекс хранится в selected_microphone_device
-    
-    def on_stereo_mix_changed(self, index: int):
-        """Обработчик изменения Stereo Mix"""
-        if index >= 0:
-            device_idx = self.combo_stereo_mix.itemData(index)
-            if device_idx is not None:
-                self.selected_stereo_mix_device = device_idx
-                device_info = sd.query_devices(device_idx)
-                self.logger.info(f"Выбран Stereo Mix: {device_info['name']} (индекс: {device_idx})")
-                # Запись совещания использует Stereo Mix только как fallback (selected_stereo_mix_device)
+
+    def refresh_audio_devices(self) -> None:
+        """Обновить списки аудио-устройств (после подключения BT-наушников и т.п.)."""
+        self.logger.info("Обновление списков аудио-устройств")
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            self.logger.debug(f"sd reinit skipped: {e}")
+        self.load_audio_devices()
+        self.load_system_outputs()
+        QMessageBox.information(
+            self,
+            "Устройства обновлены",
+            "Списки микрофонов и выходов перезагружены.\n"
+            "Если только что подключили BT-наушники — выберите их в «Системный звук (выход)».",
+        )
     
     def check_audio_level(self):
         """Проверить уровень звука во время записи (для всех активных записей)"""
@@ -790,25 +805,17 @@ class MainWindow(QMainWindow):
                     else:
                         continue
                 
-                source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+                source_name = "Собеседник" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
                 last_level = self.translation_audio_levels.get(source_type, 0.0)
-                
-                # Логировать всегда, но с разными уровнями
-                if level < 1.0:
-                    # Очень тихо или нет звука
-                    if abs(level - last_level) > 0.5:
-                        self.translation_audio_levels[source_type] = level
-                        self.logger.warning(f"⚠ Уровень звука ({source_name}): {level:.2f}% - звук не обнаружен!")
-                elif level < 5.0:
-                    # Тихий звук
-                    if abs(level - last_level) > 1.0:
-                        self.translation_audio_levels[source_type] = level
-                        self.logger.info(f"🔉 Уровень звука ({source_name}): {level:.1f}% - тихий звук")
-                else:
-                    # Нормальный звук
-                    if abs(level - last_level) > 5.0:
-                        self.translation_audio_levels[source_type] = level
-                        self.logger.info(f"🔊 Уровень звука ({source_name}): {level:.1f}% - звук обнаружен")
+
+                # Логируем только заметные изменения, чтобы не шуметь.
+                # Паузы в речи (доли секунды тишины) - норма, варнингом их не считаем.
+                if level >= 5.0 and abs(level - last_level) > 5.0:
+                    self.translation_audio_levels[source_type] = level
+                    self.logger.info(f"🔊 Уровень звука ({source_name}): {level:.1f}%")
+                elif 1.0 <= level < 5.0 and abs(level - last_level) > 2.0:
+                    self.translation_audio_levels[source_type] = level
+                    self.logger.info(f"🔉 Уровень звука ({source_name}): {level:.1f}%")
             except Exception as e:
                 self.logger.debug(f"Ошибка проверки уровня звука для {source_type}: {e}")
     
@@ -1037,6 +1044,9 @@ class MainWindow(QMainWindow):
         """Обработчик начала совещания"""
         self.logger.info(f"Совещание начато: ID={meeting.id}, время={meeting.start_time}")
         self.current_meeting = meeting
+        # Новое совещание - сбрасываем привязанный транскрипт
+        self.current_transcript_text = None
+        self.current_transcript_path = None
         self.btn_start_meeting.setEnabled(False)
         self.btn_stop_meeting.setEnabled(True)
         self.btn_generate_report.setEnabled(False)
@@ -1083,11 +1093,14 @@ class MainWindow(QMainWindow):
         # Показать путь к файлу
         if meeting.recording_path:
             file_size = os.path.getsize(meeting.recording_path) / (1024 * 1024)  # MB
-            self.label_meeting_status.setText(f"Статус: Остановлено | Файл: {Path(meeting.recording_path).name} ({file_size:.2f} MB)")
+            self.label_meeting_status.setText(
+                f"Статус: Остановлено | Файл: {Path(meeting.recording_path).name} ({file_size:.2f} MB) | "
+                f"Прогоните WAV в Colab и нажмите «📝 Загрузить транскрипт»"
+            )
             self.logger.info(f"Запись сохранена: {meeting.recording_path} ({file_size:.2f} MB)")
-        
-        # Включить кнопку ОТЧЕТ
-        self.btn_generate_report.setEnabled(True)
+
+        # Кнопка ОТЧЁТ включится только после загрузки транскрипта и шаблона
+        self._update_generate_report_enabled()
     
     def choose_recordings_folder(self):
         """Выбрать папку для сохранения записей"""
@@ -1097,6 +1110,89 @@ class MainWindow(QMainWindow):
             self.recordings_folder = folder
             self.label_recordings_folder.setText(folder)
             self.logger.info(f"Выбрана папка для записей: {folder}")
+
+    def load_transcript(self) -> None:
+        """Загрузить готовый текстовый транскрипт совещания (полученный из Colab)."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл транскрипта",
+            "",
+            "Текстовые файлы (*.txt);;Все файлы (*.*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, "r", encoding="cp1251") as f:
+                    text = f.read()
+        except Exception as e:
+            self.on_error(f"Не удалось прочитать файл транскрипта: {e}")
+            return
+
+        if not text.strip():
+            QMessageBox.warning(self, "Пустой файл", "Файл транскрипта пуст.")
+            return
+
+        # Если совещание ещё не создано (первый запуск, без записи) — создать «обёртку»
+        # под этот транскрипт, чтобы можно было сразу сделать отчёт.
+        if not self.current_meeting:
+            from domain.entities.meeting import Meeting
+            from domain.enums.meeting_status import MeetingStatus
+
+            meeting = Meeting.create()
+            meeting.status = MeetingStatus.STOPPED
+            self.current_meeting = meeting
+
+            async def _save():
+                await self.meeting_service.meeting_repository.save(meeting)
+                await self.meeting_service.attach_transcript(meeting.id, file_path, text)
+                return meeting
+
+            worker = AsyncWorker(_save())
+            worker.finished.connect(lambda _m, p=file_path, t=text: self._on_transcript_attached(p, t))
+            worker.finished.connect(lambda: self._remove_worker(worker))
+            worker.error.connect(self.on_error)
+            worker.error.connect(lambda: self._remove_worker(worker))
+            self.workers.append(worker)
+            worker.start()
+        else:
+            worker = AsyncWorker(
+                self.meeting_service.attach_transcript(self.current_meeting.id, file_path, text)
+            )
+            worker.finished.connect(lambda _m, p=file_path, t=text: self._on_transcript_attached(p, t))
+            worker.finished.connect(lambda: self._remove_worker(worker))
+            worker.error.connect(self.on_error)
+            worker.error.connect(lambda: self._remove_worker(worker))
+            self.workers.append(worker)
+            worker.start()
+
+    def _on_transcript_attached(self, file_path: str, text: str) -> None:
+        """Транскрипт успешно привязан к совещанию."""
+        self.current_transcript_text = text
+        self.current_transcript_path = file_path
+        size_kb = len(text) / 1024
+        lines = text.count("\n") + 1
+        self.logger.info(f"Транскрипт загружен: {file_path}, {len(text)} символов, ~{lines} строк")
+        self.label_meeting_status.setText(
+            f"Статус: Транскрипт загружен ({size_kb:.1f} КБ, ~{lines} строк) | "
+            f"{Path(file_path).name}"
+        )
+        self._update_generate_report_enabled()
+        QMessageBox.information(
+            self,
+            "Транскрипт загружен",
+            f"Файл: {file_path}\nСимволов: {len(text)}\n\n"
+            f"Загрузите шаблон отчёта (если ещё не загружен) и нажмите «📄 ОТЧЕТ».",
+        )
+
+    def _update_generate_report_enabled(self) -> None:
+        """Кнопка ОТЧЁТ доступна, когда есть и транскрипт, и шаблон."""
+        ready = bool(self.current_transcript_text) and bool(self.current_template)
+        self.btn_generate_report.setEnabled(ready)
     
     def update_recording_timer(self):
         """Обновить таймер записи"""
@@ -1114,26 +1210,39 @@ class MainWindow(QMainWindow):
         if not self.current_meeting:
             QMessageBox.warning(self, "Ошибка", "Нет активного совещания")
             return
-        
+
         if not self.current_template:
             QMessageBox.warning(self, "Ошибка", "Не загружен шаблон отчета. Загрузите шаблон перед генерацией отчета.")
             return
-        
+
+        if not self.current_transcript_text:
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                "Не загружен текстовый транскрипт совещания.\n\n"
+                "Прогоните WAV в Colab и загрузите .txt через кнопку «📝 Загрузить транскрипт».",
+            )
+            return
+
         # Получить выбранный язык отчета перед генерацией
         selected_language_code = self.report_language.code
         selected_language_name = self.report_language.display_name
-        
-        self.logger.info(f"Запрос на генерацию отчета. Выбранный язык: {selected_language_name} (код: {selected_language_code})")
+
+        self.logger.info(
+            f"Запрос на генерацию отчета. Выбранный язык: {selected_language_name} (код: {selected_language_code})"
+        )
         self.btn_generate_report.setEnabled(False)
         self.label_meeting_status.setText(f"Статус: Генерация отчета на {selected_language_name}...")
-        
+
         template_content = self.current_template.content
-        
+        transcript_text = self.current_transcript_text
+
         worker = AsyncWorker(
             self.meeting_service.process_meeting(
                 self.current_meeting.id,
-                selected_language_code,  # Использовать выбранный язык отчета
-                template_content
+                selected_language_code,
+                template_content,
+                transcript_text,
             )
         )
         worker.finished.connect(self.on_report_generated)
@@ -1164,6 +1273,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Отчет готов", message)
         self.label_meeting_status.setText(f"Статус: Завершено | Язык: {lang_name}")
         self.btn_generate_report.setEnabled(False)
+        # Сброс, чтобы тот же транскрипт случайно не пошёл в следующее совещание
+        self.current_transcript_text = None
+        self.current_transcript_path = None
     
     def load_template(self):
         """Загрузить шаблон"""
@@ -1185,77 +1297,67 @@ class MainWindow(QMainWindow):
     
     def on_template_loaded(self, template):
         """Обработчик загрузки шаблона"""
-        self.logger.info(f"Шаблон загружен: {template.file_path}, тип: {template.file_type}, размер: {len(template.content)} символов")
+        self.logger.info(
+            f"Шаблон загружен: {template.file_path}, тип: {template.file_type}, размер: {len(template.content)} символов"
+        )
         self.current_template = template
         QMessageBox.information(self, "Шаблон загружен", f"Шаблон загружен из:\n{template.file_path}")
+        self._update_generate_report_enabled()
     
     def toggle_translation_recording(self, source_type: AudioSourceType, checked: bool):
-        """Переключить запись для перевода (поддержка параллельной записи)"""
-        source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
-        
+        """Переключить запись для перевода (поддержка параллельной записи).
+
+        Источники:
+        - MICROPHONE → реальный микрофон через sounddevice
+        - STEREO_MIX → системный звук через WASAPI loopback от выбранного выхода
+          (работает с BT, проводными и встроенными колонками)
+        """
+        source_name = "Собеседник (loopback)" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+
         if checked:
-            # Проверить конфликт устройств с записью совещания
-            if self.current_meeting and self.current_meeting.status.value == "Recording":
-                # Определить устройство для перевода
-                translation_device_idx = None
-                if source_type == AudioSourceType.STEREO_MIX:
-                    translation_device_idx = self.selected_stereo_mix_device
-                else:
-                    translation_device_idx = self.selected_microphone_device
-                
-                # Проверить конфликт (совещание может использовать микрофон и/или Stereo Mix как fallback)
-                meeting_devices = set()
-                if self.meeting_capture_microphone:
-                    meeting_devices.add(self.selected_microphone_device)
-                if self.meeting_capture_system_audio:
-                    meeting_devices.add(self.selected_stereo_mix_device)
-                meeting_devices.discard(None)
-                if translation_device_idx in meeting_devices:
-                    device_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
-                    QMessageBox.warning(
-                        self, 
-                        "Конфликт устройств", 
-                        f"Невозможно начать запись перевода с {device_name}:\n"
-                        f"Это устройство уже используется для записи совещания.\n\n"
-                        f"Выберите другое устройство или остановите запись совещания."
-                    )
-                    # Сбросить состояние кнопки
-                    if source_type == AudioSourceType.STEREO_MIX:
-                        self.btn_listen_interlocutor.setChecked(False)
-                    else:
-                        self.btn_listen_us.setChecked(False)
-                    return
-            
             # Проверить, не идет ли уже запись с этого источника
             if source_type in self.translation_recorders:
                 self.logger.warning(f"Запись с {source_name} уже идет")
                 return
-            
+
+            # Для собеседника (loopback) проверяем, что выбран выход
+            if source_type == AudioSourceType.STEREO_MIX and not self.selected_system_output_name:
+                QMessageBox.warning(
+                    self,
+                    "Не выбран выход",
+                    "Чтобы слышать собеседника, нужно выбрать устройство вывода в группе\n"
+                    "«Управление совещанием» → «Системный звук (выход)».\n\n"
+                    "Если только что подключили BT-наушники — нажмите «🔄 Обновить устройства».",
+                )
+                self.btn_listen_interlocutor.setChecked(False)
+                return
+
             self.logger.info(f"Начало записи для перевода с {source_name}")
-            
-            # Создать отдельный рекордер для этого источника
-            from infrastructure.external_services.audio.audio_recorder import AudioRecorder
-            import os
-            recorder = AudioRecorder(
-                sample_rate=int(os.getenv("AUDIO_SAMPLE_RATE", "44100")),
-                channels=int(os.getenv("AUDIO_CHANNELS", "2"))
-            )
-            
-            # Определить устройство
-            device_idx = None
-            if source_type == AudioSourceType.STEREO_MIX:
-                device_idx = self.selected_stereo_mix_device
-            else:
-                device_idx = self.selected_microphone_device
-            
-            # Начать запись во временный файл
+
+            import os as _os
             from infrastructure.storage.storage_service import StorageService
             storage = StorageService()
-            temp_path = storage.get_temp_audio_path(f"translation_{source_type.value}")
-            
+            prefix_label = "interlocutor" if source_type == AudioSourceType.STEREO_MIX else "us"
+            temp_path = storage.get_temp_audio_path(f"translation_{prefix_label}")
+
+            sample_rate = int(_os.getenv("AUDIO_SAMPLE_RATE", "44100"))
+            channels = int(_os.getenv("AUDIO_CHANNELS", "2"))
+
+            if source_type == AudioSourceType.STEREO_MIX:
+                from infrastructure.external_services.audio.loopback_recorder import LoopbackRecorder
+                recorder = LoopbackRecorder(sample_rate=sample_rate, channels=channels)
+                start_kwargs = {"system_output_name": self.selected_system_output_name}
+            else:
+                from infrastructure.external_services.audio.audio_recorder import AudioRecorder
+                recorder = AudioRecorder(sample_rate=sample_rate, channels=channels)
+                start_kwargs = {
+                    "source_type": source_type,
+                    "device_index": self.selected_microphone_device,
+                }
+
             try:
-                recorder.start_recording(temp_path, source_type, device_idx)
-                
+                recorder.start_recording(temp_path, **start_kwargs)
+
                 # Сохранить рекордер
                 self.translation_recorders[source_type] = recorder
                 self.translation_audio_levels[source_type] = 0.0
@@ -1265,7 +1367,7 @@ class MainWindow(QMainWindow):
                 if len(active_sources) == 1:
                     self.label_translation_status.setText(f"Статус: Запись с {source_name}...")
                 else:
-                    sources_str = ", ".join(["Stereo Mix" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in active_sources])
+                    sources_str = ", ".join(["Собеседник" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in active_sources])
                     self.label_translation_status.setText(f"Статус: Запись с {sources_str}...")
                 
                 # Запустить мониторинг уровня звука (если еще не запущен)
@@ -1300,8 +1402,8 @@ class MainWindow(QMainWindow):
         """Остановить запись перевода и обработать"""
         if source_type not in self.translation_recorders:
             return
-        
-        source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+
+        source_name = "Собеседник" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
         recorder = self.translation_recorders[source_type]
         
         try:
@@ -1310,19 +1412,17 @@ class MainWindow(QMainWindow):
             # Обновить статус
             remaining_sources = [s for s in self.translation_recorders.keys() if s != source_type]
             if remaining_sources:
-                sources_str = ", ".join(["Stereo Mix" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in remaining_sources])
+                sources_str = ", ".join(["Собеседник" if s == AudioSourceType.STEREO_MIX else "Микрофон" for s in remaining_sources])
                 self.label_translation_status.setText(f"Статус: Запись с {sources_str}... | Обработка {source_name}...")
             else:
                 self.label_translation_status.setText(f"Статус: Обработка {source_name}...")
             
-            # Вычислить средний уровень звука перед остановкой
+            # Уровень звука по последнему чанку (информативно, не критерий ошибки).
             try:
-                avg_level = recorder.get_audio_level()
-                self.logger.info(f"Средний уровень звука за запись ({source_name}): {avg_level:.1f}%")
-                if avg_level < 1.0:
-                    self.logger.warning(f"⚠ ВНИМАНИЕ: Очень низкий уровень звука ({avg_level:.2f}%) - возможно устройство не работает или звук слишком тихий!")
+                last_level = recorder.get_audio_level()
+                self.logger.info(f"Уровень звука на момент остановки ({source_name}): {last_level:.1f}%")
             except Exception as e:
-                self.logger.debug(f"Не удалось вычислить средний уровень: {e}")
+                self.logger.debug(f"Не удалось вычислить уровень: {e}")
             
             # Остановить запись
             file_path = recorder.stop_recording()
@@ -1443,4 +1543,9 @@ class MainWindow(QMainWindow):
         """Обработчик ошибок"""
         self.logger.error(f"Ошибка: {error_message}", exc_info=True)
         QMessageBox.critical(self, "Ошибка", error_message)
+        # Если кнопка ОТЧЁТ была заблокирована перед запросом - вернуть её исходя из состояния
+        try:
+            self._update_generate_report_enabled()
+        except Exception:
+            pass
 

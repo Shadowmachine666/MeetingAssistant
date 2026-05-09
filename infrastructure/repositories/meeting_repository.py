@@ -42,7 +42,8 @@ class MeetingRepository(IMeetingRepository):
                     "status": meeting.status.value,
                     "recording_path": meeting.recording_path,
                     "report_path": meeting.report_path,
-                    "template_path": meeting.template_path
+                    "template_path": meeting.template_path,
+                    "transcription_path": meeting.transcription_path
                 }
                 for meeting in self._meetings.values()
             }

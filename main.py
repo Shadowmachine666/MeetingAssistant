@@ -30,6 +30,7 @@ def setup_dependencies():
         recordings_path=os.getenv("STORAGE_RECORDINGS_PATH", "./Recordings"),
         reports_path=os.getenv("STORAGE_REPORTS_PATH", "./Reports"),
         templates_path=os.getenv("STORAGE_TEMPLATES_PATH", "./Templates"),
+        transcripts_path=os.getenv("STORAGE_TRANSCRIPTS_PATH", "./Transcripts"),
         logs_path=os.getenv("STORAGE_LOGS_PATH", "./Logs")
     )
     

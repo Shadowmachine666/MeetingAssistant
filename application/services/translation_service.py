@@ -44,7 +44,7 @@ class TranslationService:
                                        target_language: Language,
                                        source_language: Language = None) -> TranslationResult:
         """Перевести аудио из файла"""
-        source_name = "Stereo Mix" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
+        source_name = "Собеседник" if source_type == AudioSourceType.STEREO_MIX else "Микрофон"
         self.logger.info(f"Начало обработки перевода: файл={file_path}, источник={source_name}, язык={target_language.display_name}")
         
         try:
