@@ -206,6 +206,10 @@ class MainWindow(QMainWindow):
         
         # Папка для записей
         self.recordings_folder = "./Recordings"
+
+        # Авто-стоп записи по таймеру (None — выключено)
+        self.recording_auto_stop_seconds: Optional[int] = None
+        self._auto_stop_triggered = False
         
         # Сохранение исходных расширенных стилей окна для восстановления
         self.original_ex_style = None
@@ -270,12 +274,42 @@ class MainWindow(QMainWindow):
         self.btn_generate_report.clicked.connect(self.generate_report)
         self.btn_generate_report.setEnabled(False)
 
+        # Восстановление записи из аварийных сырых файлов (.pcm) в готовый WAV
+        self.btn_recover_recording = QPushButton("🛠 Восстановитель записи")
+        self.btn_recover_recording.setToolTip(
+            "Собрать готовый WAV из аварийных файлов записи (.mic.pcm / .sys.pcm),\n"
+            "если запись не сохранилась автоматически или митинг превысил лимит одного файла."
+        )
+        self.btn_recover_recording.clicked.connect(self.recover_recording)
+
         btn_layout.addWidget(self.btn_start_meeting)
         btn_layout.addWidget(self.btn_stop_meeting)
         btn_layout.addWidget(self.btn_load_transcript)
         btn_layout.addWidget(self.btn_load_template)
         btn_layout.addWidget(self.btn_generate_report)
+        btn_layout.addWidget(self.btn_recover_recording)
         meeting_layout.addLayout(btn_layout)
+
+        # Авто-стоп записи по таймеру (чтобы можно было уйти от компьютера)
+        auto_stop_layout = QHBoxLayout()
+        auto_stop_label = QLabel("Авто-стоп записи:")
+        auto_stop_label.setStyleSheet("border: none;")
+        auto_stop_layout.addWidget(auto_stop_label)
+        self.combo_auto_stop = QComboBox()
+        # (подпись, секунды); None — выключено, -1 — произвольное значение
+        self.combo_auto_stop.addItem("Выкл", None)
+        self.combo_auto_stop.addItem("30 мин", 30 * 60)
+        self.combo_auto_stop.addItem("1 ч", 60 * 60)
+        self.combo_auto_stop.addItem("1.5 ч", 90 * 60)
+        self.combo_auto_stop.addItem("2 ч", 120 * 60)
+        self.combo_auto_stop.addItem("3 ч", 180 * 60)
+        self.combo_auto_stop.addItem("4 ч", 240 * 60)
+        self.combo_auto_stop.addItem("Другое…", -1)
+        self.combo_auto_stop.setCurrentIndex(0)
+        self.combo_auto_stop.currentIndexChanged.connect(self._apply_auto_stop_selection)
+        auto_stop_layout.addWidget(self.combo_auto_stop)
+        auto_stop_layout.addStretch()
+        meeting_layout.addLayout(auto_stop_layout)
         
         # Папка для сохранения
         folder_layout = QHBoxLayout()
@@ -1055,8 +1089,9 @@ class MainWindow(QMainWindow):
         self.recording_indicator.setVisible(True)
         self.recording_indicator.setStyleSheet("color: red; font-size: 20px;")
         
-        # Запустить таймер
+        # Запустить таймер (сбросив состояние авто-стопа для новой записи)
         from datetime import datetime
+        self._auto_stop_triggered = False
         self.recording_start_time = datetime.now()
         self.recording_timer.start(1000)  # Обновлять каждую секунду
         self.update_recording_timer()
@@ -1065,15 +1100,48 @@ class MainWindow(QMainWindow):
     
     def stop_meeting(self):
         """Остановить совещание"""
+        # Защита от повторных кликов: пока идёт остановка, кнопка недоступна.
+        if not self.btn_stop_meeting.isEnabled():
+            self.logger.warning("Повторный запрос на остановку проигнорирован")
+            return
         self.logger.info("Запрос на остановку совещания")
+        self.btn_stop_meeting.setEnabled(False)
+        self.label_meeting_status.setText("Статус: Сохранение записи…")
         worker = AsyncWorker(self.meeting_service.stop_meeting())
         worker.finished.connect(self.on_meeting_stopped)
         worker.finished.connect(lambda: self._remove_worker(worker))
-        worker.error.connect(self.on_error)
+        worker.error.connect(self.on_meeting_stop_error)
         worker.error.connect(lambda: self._remove_worker(worker))
         self.workers.append(worker)
         worker.start()
-    
+
+    def _reset_recording_ui(self):
+        """Сбросить UI записи (таймер, индикатор). Вызывается и при успехе, и при ошибке."""
+        self.recording_timer.stop()
+        self.recording_indicator.setVisible(False)
+        self.label_recording_timer.setVisible(False)
+        self.recording_start_time = None
+        self._auto_stop_triggered = False
+
+    def on_meeting_stop_error(self, error_message: str):
+        """Обработчик ошибки остановки совещания.
+
+        Критично: даже при сбое сохранения UI обязан вернуться в согласованное
+        состояние — иначе «красные цифры» продолжают идти при остановленной записи.
+        """
+        self.logger.error(f"Ошибка остановки совещания: {error_message}")
+        self._reset_recording_ui()
+        self.btn_start_meeting.setEnabled(True)
+        self.btn_stop_meeting.setEnabled(False)
+        self.label_meeting_status.setText("Статус: Ошибка при остановке записи")
+        QMessageBox.critical(
+            self,
+            "Ошибка остановки записи",
+            f"{error_message}\n\n"
+            "Если в сообщении указаны файлы .pcm — исходные данные записи сохранены "
+            "на диске и их можно восстановить."
+        )
+
     def on_meeting_stopped(self, meeting):
         """Обработчик остановки совещания"""
         duration = (meeting.end_time - meeting.start_time).total_seconds() if meeting.end_time else 0
@@ -1081,13 +1149,10 @@ class MainWindow(QMainWindow):
         self.current_meeting = meeting
         self.btn_start_meeting.setEnabled(True)
         self.btn_stop_meeting.setEnabled(False)
-        
-        # Скрыть индикатор записи
-        self.recording_indicator.setVisible(False)
-        self.label_recording_timer.setVisible(False)
-        self.recording_timer.stop()
-        self.recording_start_time = None
-        
+
+        # Скрыть индикатор записи и остановить таймер
+        self._reset_recording_ui()
+
         # Сбросить состояние (устройство выбирается отдельно через комбобоксы)
         
         # Показать путь к файлу
@@ -1101,7 +1166,99 @@ class MainWindow(QMainWindow):
 
         # Кнопка ОТЧЁТ включится только после загрузки транскрипта и шаблона
         self._update_generate_report_enabled()
-    
+
+    def recover_recording(self):
+        """Собрать готовый WAV из аварийных сырых файлов (.mic.pcm / .sys.pcm).
+
+        Пользователь выбирает любой из файлов пары; программа находит оба и сводит
+        их тем же движком, что и обычную запись, в новый ..._recovered.wav.
+        """
+        from PyQt6.QtWidgets import QFileDialog
+
+        recorder = self.meeting_service.audio_recorder
+        if getattr(recorder, "is_recording", False):
+            QMessageBox.warning(self, "Восстановление недоступно",
+                                "Сейчас идёт запись. Остановите её перед восстановлением.")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выберите аварийный файл записи (.mic.pcm или .sys.pcm)",
+            self.recordings_folder, "Сырые файлы записи (*.pcm)"
+        )
+        if not path:
+            return
+
+        # Определить базовый путь и пару .mic.pcm / .sys.pcm
+        if path.endswith(".mic.pcm"):
+            base = path[: -len(".mic.pcm")]
+        elif path.endswith(".sys.pcm"):
+            base = path[: -len(".sys.pcm")]
+        else:
+            QMessageBox.warning(self, "Неподходящий файл",
+                                "Выберите файл, оканчивающийся на .mic.pcm или .sys.pcm")
+            return
+
+        mic_raw = base + ".mic.pcm"
+        sys_raw = base + ".sys.pcm"
+        has_mic = os.path.exists(mic_raw) and os.path.getsize(mic_raw) > 0
+        has_sys = os.path.exists(sys_raw) and os.path.getsize(sys_raw) > 0
+        if not has_mic and not has_sys:
+            QMessageBox.warning(self, "Нет данных",
+                                "Рядом не найдено непустых файлов .mic.pcm / .sys.pcm.")
+            return
+
+        # base — это исходный путь ..._meeting.wav; итог кладём отдельным файлом,
+        # чтобы не затирать возможный частичный WAV.
+        stem = base[: -len(".wav")] if base.endswith(".wav") else base
+        output_path = stem + "_recovered.wav"
+
+        self.btn_recover_recording.setEnabled(False)
+        self.label_meeting_status.setText("Статус: Восстановление записи…")
+        self.logger.info(f"Восстановление записи из {mic_raw} / {sys_raw} → {output_path}")
+
+        async def do_recover():
+            # Тяжёлое сведение — в отдельном потоке, чтобы не блокировать UI.
+            truncated = await asyncio.to_thread(
+                recorder._stream_mix_to_wav,
+                output_path,
+                mic_raw if has_mic else None,
+                sys_raw if has_sys else None,
+            )
+            return output_path, truncated
+
+        worker = AsyncWorker(do_recover())
+        worker.finished.connect(self.on_recovery_finished)
+        worker.finished.connect(lambda: self._remove_worker(worker))
+        worker.error.connect(self.on_recovery_error)
+        worker.error.connect(lambda: self._remove_worker(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def on_recovery_finished(self, result):
+        """Успешное восстановление записи."""
+        output_path, truncated = result
+        self.btn_recover_recording.setEnabled(True)
+        size_mb = os.path.getsize(output_path) / (1024 * 1024) if os.path.exists(output_path) else 0
+        self.logger.info(f"Запись восстановлена: {output_path} ({size_mb:.2f} MB), truncated={truncated}")
+        self.label_meeting_status.setText(
+            f"Статус: Восстановлено | Файл: {Path(output_path).name} ({size_mb:.2f} MB)"
+        )
+        note = ""
+        if truncated:
+            note = ("\n\nВнимание: запись длиннее лимита одного WAV — восстановлена только "
+                    "первая часть. Полные сырые .pcm оставлены на диске.")
+        QMessageBox.information(
+            self, "Восстановление завершено",
+            f"Готовый файл сохранён:\n{output_path}\n({size_mb:.2f} MB){note}"
+        )
+
+    def on_recovery_error(self, error_message: str):
+        """Ошибка восстановления записи."""
+        self.btn_recover_recording.setEnabled(True)
+        self.label_meeting_status.setText("Статус: Ошибка восстановления")
+        self.logger.error(f"Ошибка восстановления записи: {error_message}")
+        QMessageBox.critical(self, "Ошибка восстановления", error_message)
+
     def choose_recordings_folder(self):
         """Выбрать папку для сохранения записей"""
         from PyQt6.QtWidgets import QFileDialog
@@ -1194,6 +1351,33 @@ class MainWindow(QMainWindow):
         ready = bool(self.current_transcript_text) and bool(self.current_template)
         self.btn_generate_report.setEnabled(ready)
     
+    def _apply_auto_stop_selection(self):
+        """Пересчитать таймер авто-стопа из комбобокса (можно менять на лету)."""
+        data = self.combo_auto_stop.currentData()
+        if data == -1:  # «Другое…» — запросить минуты у пользователя
+            from PyQt6.QtWidgets import QInputDialog
+            minutes, ok = QInputDialog.getInt(
+                self, "Авто-стоп записи",
+                "Остановить запись через (минут):", 60, 1, 24 * 60, 1
+            )
+            if not ok:
+                # Отмена — вернуть комбобокс к «Выкл»
+                self.combo_auto_stop.blockSignals(True)
+                self.combo_auto_stop.setCurrentIndex(0)
+                self.combo_auto_stop.blockSignals(False)
+                self.recording_auto_stop_seconds = None
+                return
+            self.recording_auto_stop_seconds = int(minutes) * 60
+            self.combo_auto_stop.setItemText(self.combo_auto_stop.count() - 1, f"Другое ({minutes} мин)")
+        else:
+            self.recording_auto_stop_seconds = data
+        # Смена лимита во время записи «оживляет» проверку заново
+        self._auto_stop_triggered = False
+        if self.recording_auto_stop_seconds:
+            self.logger.info(f"Авто-стоп записи выставлен: {self.recording_auto_stop_seconds} сек")
+        else:
+            self.logger.info("Авто-стоп записи выключен")
+
     def update_recording_timer(self):
         """Обновить таймер записи"""
         if self.recording_start_time:
@@ -1202,7 +1386,21 @@ class MainWindow(QMainWindow):
             hours = int(elapsed // 3600)
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
-            self.label_recording_timer.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+            label = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+            # Авто-стоп по таймеру: сработать один раз при достижении лимита.
+            if self.recording_auto_stop_seconds:
+                remaining = self.recording_auto_stop_seconds - elapsed
+                if remaining <= 0 and not self._auto_stop_triggered:
+                    self._auto_stop_triggered = True
+                    self.logger.info("Авто-стоп записи по таймеру")
+                    self.stop_meeting()
+                    return
+                if remaining > 0:
+                    r = int(remaining)
+                    label += f"  ⏹ авто-стоп через {r // 3600:02d}:{(r % 3600) // 60:02d}:{r % 60:02d}"
+
+            self.label_recording_timer.setText(label)
             self.label_recording_timer.setVisible(True)
     
     def generate_report(self):

@@ -58,7 +58,16 @@ class MeetingService:
             raise MeetingNotStartedException("Совещание не идет")
 
         self.logger.info("Остановка записи...")
-        file_path = self.audio_recorder.stop_recording()
+        try:
+            file_path = self.audio_recorder.stop_recording()
+        except Exception as e:
+            # Не оставляем совещание в залипшем статусе "Recording": помечаем его
+            # остановленным, чтобы пользователь мог начать новую запись. Исходные
+            # данные (.pcm) остаются на диске и восстановимы (см. рекордер).
+            self.logger.error(f"Ошибка остановки записи: {e}")
+            meeting.stop()
+            await self.meeting_repository.save(meeting)
+            raise
         self.logger.info(f"Запись остановлена, файл: {file_path}")
 
         file_size = os.path.getsize(file_path)
